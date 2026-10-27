@@ -1,0 +1,68 @@
+# Room creature: what stays out of version control.
+# Rule of thumb: source, docs and configuration go in; anything a tool,
+# a build, a test run or the running system produces stays out.
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# Editors
+.idea/
+*.swp
+*~
+.vscode/*
+!.vscode/extensions.json
+
+# PlatformIO (firmware build output and downloaded libraries)
+.pio/
+
+# Python environments, caches and test output
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Xcode (build products and per-user state)
+build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Runtime data written by the hub and the tools: event logs, recordings,
+# plots, the rename map. The folder itself is kept.
+data/*
+!data/.gitkeep
+
+# Machine learning experiment: recorded clips and trained artifacts
+ml/data/
+ml/*.pt
+ml/*.pth
+src/model_weights.h
+
+# ESPHome (ear chip): real credentials and its build cache
+ear/secrets.yaml
+ear/.esphome/
+
+# Secrets and local overrides, wherever they appear
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.mobileprovision
+
+# Logs
+*.log

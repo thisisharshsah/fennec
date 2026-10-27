@@ -1,0 +1,211 @@
+import Foundation
+
+enum BridgeMessage: Sendable {
+    case hello(HelloMessage)
+    case history([EventMessage])
+    case state(StateMessage)
+    case event(EventMessage)
+    case unitStatus(UnitStatusMessage)
+    case body(BodyMessage)
+    case unitHello(HelloMessage)
+    case status(StatusMessage)
+    case series(SeriesMessage)
+}
+
+struct BridgeMessageError: Error {
+    let type: String
+}
+
+extension BridgeMessage {
+    private struct Envelope: Decodable {
+        let type: String
+    }
+
+    private struct HistoryPayload: Decodable {
+        let events: [EventMessage]
+    }
+
+    static func decode(_ data: Data) throws -> BridgeMessage {
+        let decoder = JSONDecoder()
+        let type = try decoder.decode(Envelope.self, from: data).type
+        switch type {
+        case "hello":
+            let hello = try decoder.decode(HelloMessage.self, from: data)
+            return hello.isFromUnit ? .unitHello(hello) : .hello(hello)
+        case "status": return .status(try decoder.decode(StatusMessage.self, from: data))
+        case "history": return .history(try decoder.decode(HistoryPayload.self, from: data).events)
+        case "state": return .state(try decoder.decode(StateMessage.self, from: data))
+        case "event": return .event(try decoder.decode(EventMessage.self, from: data))
+        case "unit_status": return .unitStatus(try decoder.decode(UnitStatusMessage.self, from: data))
+        case "body": return .body(try decoder.decode(BodyMessage.self, from: data))
+        case "series": return .series(try decoder.decode(SeriesMessage.self, from: data))
+        default: throw BridgeMessageError(type: type)
+        }
+    }
+}
+
+struct HelloMessage: Decodable, Sendable {
+    var bridge: String?
+    var lanIP: String?
+    var unitPort: Int?
+    var units: [UnitSummary]?
+    var unit: String?
+    var fw: String?
+    var sensors: [String]?
+    var wifi: WifiInfoMessage?
+    var link: String?
+    var ts: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case bridge, units, unit, fw, sensors, wifi, link, ts
+        case lanIP = "lan_ip"
+        case unitPort = "unit_port"
+    }
+
+    var isFromUnit: Bool { units == nil && unit != nil }
+}
+
+struct WifiInfoMessage: Decodable, Sendable {
+    var module: String?
+    var ssid: String?
+    var joined: Bool?
+    var ip: String?
+    var bridge: Bool?
+}
+
+struct StatusMessage: Decodable, Sendable {
+    var unit: String?
+    var link: String?
+    var ts: Double?
+    var ssid: String?
+    var joined: Bool?
+    var ip: String?
+    var rssi: Double?
+    var bridgeHost: String?
+    var bridgePort: Int?
+    var bridge: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case unit, link, ts, ssid, joined, ip, rssi, bridge
+        case bridgeHost = "bridge_host"
+        case bridgePort = "bridge_port"
+    }
+}
+
+struct UnitSummary: Decodable, Sendable {
+    var unit: String
+    var connected: Bool?
+    var sensors: [String]?
+    var link: String?
+    var lastState: StateMessage?
+    /// The unit's own last hello, as the hub stored it (firmware, Wi-Fi network).
+    var hello: HelloMessage?
+
+    enum CodingKeys: String, CodingKey {
+        case unit, connected, sensors, link, hello
+        case lastState = "last_state"
+    }
+}
+
+struct StateMessage: Decodable, Sendable {
+    var unit: String?
+    var link: String?
+    var ts: Double?
+    var tempC: Double?
+    var humPct: Double?
+    var pressHpa: Double?
+    var tofMm: Double?
+    var headingDeg: Double?
+    var motion: Int?
+    var soundDb: Double?
+    var soundDir: Double?
+    var rssi: Double?
+    var body: BodyMessage?
+    var health: HealthMessage?
+
+    enum CodingKeys: String, CodingKey {
+        case unit, link, ts, motion, body, rssi, health
+        case tempC = "temp_c"
+        case humPct = "hum_pct"
+        case pressHpa = "press_hpa"
+        case tofMm = "tof_mm"
+        case headingDeg = "heading_deg"
+        case soundDb = "sound_db"
+        case soundDir = "sound_dir"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        unit = try c.decodeIfPresent(String.self, forKey: .unit)
+        link = try c.decodeIfPresent(String.self, forKey: .link)
+        ts = try c.decodeIfPresent(Double.self, forKey: .ts)
+        body = try c.decodeIfPresent(BodyMessage.self, forKey: .body)
+        rssi = try c.decodeIfPresent(Double.self, forKey: .rssi)
+        health = try? c.decodeIfPresent(HealthMessage.self, forKey: .health)   // firmware 0.5+; never fails the state
+        tempC = try c.decodeIfPresent(Double.self, forKey: .tempC)
+        humPct = try c.decodeIfPresent(Double.self, forKey: .humPct)
+        pressHpa = try c.decodeIfPresent(Double.self, forKey: .pressHpa)
+        tofMm = try c.decodeIfPresent(Double.self, forKey: .tofMm)
+        headingDeg = try c.decodeIfPresent(Double.self, forKey: .headingDeg)
+        soundDb = try c.decodeIfPresent(Double.self, forKey: .soundDb)
+        soundDir = try c.decodeIfPresent(Double.self, forKey: .soundDir)
+        if let flag = try? c.decodeIfPresent(Bool.self, forKey: .motion) {
+            motion = flag ? 1 : 0
+        } else {
+            motion = try c.decodeIfPresent(Int.self, forKey: .motion)
+        }
+    }
+}
+
+struct EventMessage: Decodable, Sendable {
+    var unit: String?
+    var link: String?
+    var ts: Double?
+    var t: Int?
+    var name: String
+    var mm: Double?
+    var text: String?
+    var durationS: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case unit, link, ts, t, name, mm, text
+        case durationS = "duration_s"
+    }
+}
+
+struct UnitStatusMessage: Decodable, Sendable {
+    var unit: String
+    var link: String?
+    var connected: Bool
+    var ts: Double?
+}
+
+/// The `health` block of a state line (firmware 0.5+). Every field is optional so older or partial
+/// blocks still decode.
+struct HealthMessage: Decodable, Equatable, Sendable {
+    var uptimeS: Double?
+    var boots: Int?
+    var wdResets: Int?
+    var reset: String?
+    var freeRam: Int?
+    var wifiReconnects: Int?
+    var journal: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case boots, reset, journal
+        case uptimeS = "uptime_s"
+        case wdResets = "wd_resets"
+        case freeRam = "free_ram"
+        case wifiReconnects = "wifi_reconnects"
+    }
+}
+
+
+/// A field's history from the hub's log: [[unix_ts, value], ...], downsampled to a few hundred points.
+struct SeriesMessage: Decodable, Sendable {
+    var unit: String?
+    var field: String?
+    var request: String?
+    var points: [[Double]]?
+    var error: String?
+}

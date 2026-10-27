@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "fennec": {
+      "command": "bridge/.venv/bin/python",
+      "args": [
+        "bridge/mcp_server.py"
+      ]
+    }
+  }
+}

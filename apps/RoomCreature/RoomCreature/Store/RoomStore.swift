@@ -1,0 +1,167 @@
+import Foundation
+import Observation
+
+@MainActor @Observable
+final class RoomStore {
+    static let sampleWindow: TimeInterval = 10 * 60
+    static let eventLimit = 500
+
+    private(set) var unitsByID: [String: UnitState] = [:]
+    private(set) var events: [RoomEvent] = []
+    private(set) var bridgeVersion: String?
+    private(set) var bridgeLanIP: String?
+    private(set) var bridgeUnitPort: Int?
+    private(set) var wifiRequests: [String: Date] = [:]
+    /// History answers from the hub, keyed by the request id the view chose.
+    private(set) var series: [String: [(time: Date, value: Double)]] = [:]
+    /// Creatures known to this app, persisted across launches.
+    let registry = CreatureRegistry()
+
+    var units: [UnitState] {
+        unitsByID.values.sorted { $0.id < $1.id }
+    }
+
+    func apply(_ message: BridgeMessage) {
+        switch message {
+        case .series(let reply):
+            if let key = reply.request {
+                series[key] = (reply.points ?? []).compactMap { pair in
+                    pair.count == 2 ? (Date(timeIntervalSince1970: pair[0]), pair[1]) : nil
+                }
+            }
+        case .hello(let hello):
+            bridgeVersion = hello.bridge
+            bridgeLanIP = hello.lanIP
+            bridgeUnitPort = hello.unitPort
+            for summary in hello.units ?? [] {
+                update(summary.unit) { unit in
+                    unit.isConnected = summary.connected ?? true
+                    unit.sensors = summary.sensors ?? summary.hello?.sensors ?? unit.sensors
+                    unit.link = summary.link ?? unit.link
+                    unit.firmware = summary.hello?.fw ?? unit.firmware
+                    if let wifi = summary.hello?.wifi {
+                        unit.wifi = WifiStatus(wifi, previous: unit.wifi, at: Self.time(summary.hello?.ts))
+                    }
+                    if let last = summary.lastState {
+                        let sample = StateSample(last)
+                        unit.append(sample, window: Self.sampleWindow)
+                        unit.health = last.health ?? unit.health
+                        unit.lastSeen = max(unit.lastSeen ?? .distantPast, sample.time)
+                        if let body = last.body {
+                            unit.body = BodyState(body, previous: unit.body)
+                        }
+                    }
+                }
+            }
+        case .history(let history):
+            merge(history.map { RoomEvent($0) })
+        case .state(let state):
+            update(state.unit ?? "unknown") { unit in
+                unit.isConnected = true
+                unit.link = state.link ?? unit.link
+                let sample = StateSample(state)
+                unit.append(sample, window: Self.sampleWindow)
+                unit.lastSeen = sample.time
+                unit.health = state.health ?? unit.health
+                if let body = state.body {
+                    unit.body = BodyState(body, previous: unit.body)
+                }
+            }
+        case .event(let event):
+            if let id = event.unit {
+                update(id) { unit in
+                    unit.link = event.link ?? unit.link
+                    unit.lastSeen = Self.time(event.ts)
+                }
+            }
+            merge([RoomEvent(event)])
+        case .unitStatus(let status):
+            update(status.unit, announced: status.connected) { unit in
+                unit.isConnected = status.connected
+                unit.link = status.link ?? unit.link
+            }
+        case .unitHello(let hello):
+            let id = hello.unit ?? "unknown"
+            update(id, isHello: true, announced: true) { unit in
+                unit.isConnected = true
+                unit.lastSeen = Self.time(hello.ts)
+                unit.link = hello.link ?? unit.link
+                unit.firmware = hello.fw ?? unit.firmware
+                unit.sensors = hello.sensors ?? unit.sensors
+                if let wifi = hello.wifi {
+                    unit.wifi = WifiStatus(wifi, previous: unit.wifi, at: Self.time(hello.ts))
+                }
+            }
+            wifiRequests[id] = nil
+        case .status(let status):
+            let id = status.unit ?? "unknown"
+            update(id) { unit in
+                unit.link = status.link ?? unit.link
+                unit.wifi = WifiStatus(status, previous: unit.wifi, at: Self.time(status.ts))
+            }
+            wifiRequests[id] = nil
+        case .body(let body):
+            update(body.unit ?? "unknown") { unit in
+                unit.link = body.link ?? unit.link
+                unit.body = BodyState(body, previous: unit.body)
+                unit.lastSeen = Self.time(body.ts)
+            }
+        }
+    }
+
+    /// The live state of a unit, or an empty offline one for a creature the hub has not reported yet.
+    func unit(_ id: String) -> UnitState {
+        unitsByID[id] ?? UnitState(id: id)
+    }
+
+    /// Units that are not creatures (the Mac's microphone, the ear, the voice helper).
+    var otherDevices: [UnitState] {
+        units.filter { !$0.isCreature && !registry.isKnown($0.id) }
+    }
+
+    var speechUnit: UnitState? {
+        units.first(where: \.hasMicrophone) ?? unitsByID["mac-mic"]
+    }
+
+    func events(for unitID: String, since: Date) -> [RoomEvent] {
+        events.filter { $0.unit == unitID && $0.time >= since }
+    }
+
+    func noteWifiRequest(for unitID: String) {
+        wifiRequests[unitID] = .now
+    }
+
+    func dismissWifiRequest(for unitID: String) {
+        wifiRequests[unitID] = nil
+    }
+
+    private static func time(_ ts: Double?) -> Date {
+        ts.map { Date(timeIntervalSince1970: $0) } ?? .now
+    }
+
+    func clearHistory() {
+        events.removeAll()
+        for id in unitsByID.keys {
+            unitsByID[id]?.samples.removeAll()
+        }
+    }
+
+    private func update(_ id: String, isHello: Bool = false, announced: Bool = false, _ change: (inout UnitState) -> Void) {
+        var unit = unitsByID[id] ?? UnitState(id: id)
+        change(&unit)
+        unitsByID[id] = unit
+        if let oldID = registry.observe(unit, isHello: isHello, announced: announced) {
+            unitsByID[oldID] = nil           // renamed: the old id is only a ghost on the hub now
+        }
+    }
+
+    private func merge(_ incoming: [RoomEvent]) {
+        let known = Set(events.map(\.id))
+        let fresh = incoming.filter { !known.contains($0.id) }
+        guard !fresh.isEmpty else { return }
+        events = (events + fresh)
+            .sorted { $0.time > $1.time }
+            .prefix(Self.eventLimit)
+            .map { $0 }
+    }
+}
