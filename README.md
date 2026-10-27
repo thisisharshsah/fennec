@@ -128,6 +128,15 @@ bytes every 2 s, so a mood or look command sent while untethered lands
 within about two seconds. Over the cable it is instant. Giving the unit new
 Wi-Fi details needs the cable, since the old network goes away.
 
+## Daily life
+
+The hub gives each creature a few habits of its own, in `bridge/life.py`:
+it greets you when you come back after 20 minutes away, says good morning
+and goodnight, suggests a break after 50 minutes in front of it, and
+notices when the room warms up fast. Each shows as a note in the
+creature's Activity and moves its body; none repeats often. Turn it off in
+the app under Settings › Daily life.
+
 ## Hearing words
 
 Not on the Mac and not on this board. The product gets an ear chip (an

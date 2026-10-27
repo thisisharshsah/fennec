@@ -17,9 +17,19 @@ struct RoomCreatureApp: App {
                             try? await Task.sleep(for: .milliseconds(250))
                         }
                         model.navigator.open(id)
-                        if UserDefaults.standard.string(forKey: "openPage") == "history" {
-                            model.navigator.path.append(.history(id))
+                        switch UserDefaults.standard.string(forKey: "openPage") {
+                        case "history": model.navigator.path.append(.history(id))
+                        case "conversation": model.navigator.path.append(.conversation(id))
+                        default: break
                         }
+                    }
+                    // `-openMessages 1` opens the list of conversations.
+                    if UserDefaults.standard.bool(forKey: "openMessages") {
+                        model.navigator.openMessages()
+                    }
+                    // `-openSettings 1` shows Settings.
+                    if UserDefaults.standard.bool(forKey: "openSettings") {
+                        model.navigator.isShowingSettings = true
                     }
                     #endif
                 }

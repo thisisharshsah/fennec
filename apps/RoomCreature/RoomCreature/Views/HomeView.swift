@@ -25,7 +25,9 @@ struct HomeView: View {
         } detail: {
             NavigationStack(path: $navigator.path) {
                 Group {
-                    if let selection = navigator.selection {
+                    if navigator.selection == Navigator.messagesSelection {
+                        MessagesInboxView()
+                    } else if let selection = navigator.selection {
                         CreatureDetailView(initialID: selection)
                             .id(selection)
                     } else {
@@ -48,6 +50,7 @@ struct HomeView: View {
 
     #if os(macOS)
     private func selectFirstIfNeeded() {
+        if model.navigator.selection == Navigator.messagesSelection { return }
         let ids = model.store.registry.creatures.map(\.unitID)
         let current = model.navigator.selection.map { model.store.registry.currentID(for: $0) }
         if let current, ids.contains(current) {
@@ -68,6 +71,8 @@ private struct CreatureDestinations: ViewModifier {
             case .creature(let id): CreatureDetailView(initialID: id)
             case .history(let id): ChartsView(unitID: id)
             case .wifi(let id): CreatureWifiView(initialID: id)
+            case .messages: MessagesInboxView()
+            case .conversation(let id): ConversationView(initialID: id)
             }
         }
     }
@@ -124,6 +129,8 @@ private struct CreatureList: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: Theme.Spacing.m) {
                 HubBanner()
+                MessagesHomeCard()
+                    .padding(.bottom, Theme.Spacing.xs)
                 ForEach(creatures, id: \.creature.unitID) { item in
                     NavigationLink(value: Navigator.Route.creature(item.creature.unitID)) {
                         CreatureCard(unit: item.unit, name: item.creature.name, lastSeen: item.creature.lastSeen)
@@ -212,6 +219,11 @@ private struct HomeSidebar: View {
         let creatures = sortedCreatures(model)
         let others = model.store.otherDevices
         List(selection: $navigator.selection) {
+            Section {
+                Label("Messages", systemImage: "bubble.left.and.bubble.right")
+                    .badge(model.store.messages.totalUnread)
+                    .tag(Navigator.messagesSelection)
+            }
             Section("My creatures") {
                 ForEach(creatures, id: \.creature.unitID) { item in
                     CreatureSidebarRow(unit: item.unit, name: item.creature.name, lastSeen: item.creature.lastSeen)

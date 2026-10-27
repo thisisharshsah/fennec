@@ -118,8 +118,12 @@ final class BridgeClient {
 
     private func handle(_ data: Data) {
         do {
-            store.apply(try BridgeMessage.decode(data))
+            let message = try BridgeMessage.decode(data)
+            store.apply(message)
             messageCount += 1
+            if case .hello = message {
+                send(.messages(days: MessageStore.historyDays))     // the conversation, once per connection
+            }
         } catch let error as BridgeMessageError {
             logger.debug("ignoring message of type \(error.type, privacy: .public)")
         } catch {

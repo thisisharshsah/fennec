@@ -7,6 +7,7 @@ struct RoomEvent: Identifiable, Hashable, Sendable {
     let name: String
     let distanceMm: Double?
     let text: String?
+    let kind: String?
 
     init(_ message: EventMessage, receivedAt now: Date = .now) {
         unit = message.unit ?? "unknown"
@@ -14,6 +15,7 @@ struct RoomEvent: Identifiable, Hashable, Sendable {
         name = message.name
         distanceMm = message.mm
         text = message.text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        kind = message.kind
         if let ts = message.ts {
             id = "\(unit)|\(ts)|\(message.name)"
         } else {
@@ -21,12 +23,25 @@ struct RoomEvent: Identifiable, Hashable, Sendable {
         }
     }
 
+    var isNotice: Bool { name == "notice" }
+
     var title: String {
-        name.split(separator: "_").joined(separator: " ").capitalizedFirst
+        if isNotice { return "Fennec noticed" }
+        return name.split(separator: "_").joined(separator: " ").capitalizedFirst
     }
 
     var symbolName: String {
-        switch name {
+        if isNotice {
+            switch kind {
+            case "greet": return "hand.wave.fill"
+            case "morning": return "sun.max.fill"
+            case "break": return "cup.and.saucer.fill"
+            case "warm": return "thermometer.sun.fill"
+            case "goodnight": return "moon.zzz.fill"
+            default: return "sparkles"
+            }
+        }
+        return switch name {
         case "clap": "hands.clap"
         case "knock": "hand.tap"
         case "moved": "move.3d"

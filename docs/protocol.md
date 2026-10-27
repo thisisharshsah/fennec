@@ -146,6 +146,35 @@ Connection changes:
 {"type":"unit_status","unit":"desk","link":"wifi","connected":false,"ts":...}
 ```
 
+Daily life (hub 0.4+): rules in `bridge/life.py` watch presence, readings
+and sound, drive the creature's body (express, gesture, chirp) and post a
+notice as an event of the creature with `link` `hub`:
+
+```json
+{"type":"event","unit":"crawl","link":"hub","name":"notice","kind":"greet","text":"Welcome back. You were away 45 minutes."}
+```
+
+Kinds: greet, morning, break, warm, goodnight. The hub hello carries
+`"life":true|false`; `{"cmd":"life","on":0}` turns the rules off (kept in
+data/life.json) and the hub answers `{"type":"life","enabled":false}`.
+
+Talking without a speaker (hub 0.4+): `{"cmd":"say","unit":"crawl","text":"..."}`
+makes the creature chirp and posts a notice of kind `say`; the agent's
+`speak` tool does this when no speaker unit is online. The owner answers
+with `{"cmd":"reply","unit":"crawl","text":"..."}`, which the hub records as
+`{"type":"event","name":"speech","via":"notification","text":"..."}`, so
+an agent waiting for speech hears it. `{"cmd":"messages","days":14}`
+returns the conversation from the log:
+
+```json
+{"type":"messages","items":[{"id":"crawl|1793138676.1|notice","unit":"crawl","ts":1793138676.1,"from":"creature","kind":"say","text":"..."}]}
+```
+
+Optional relay for a phone with the app closed: `data/notify.json` with
+`{"ntfy_topic":"<secret topic>","ntfy_server":"https://ntfy.sh"}` makes the
+hub also post every notice to that ntfy topic. Off when the file is absent.
+Notices then pass through the ntfy server, so pick a long random topic.
+
 Apps to bridge, answered by the hub itself from its log:
 
 ```json

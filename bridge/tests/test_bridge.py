@@ -164,3 +164,31 @@ def test_series_reads_and_downsamples(tmp_path, monkeypatch):
     pts = B.read_series("desk", "temp_c", now - 1100, now + 1)
     assert 0 < len(pts) <= B.SERIES_MAX_POINTS
     assert all(19.9 < v < 21.1 for _, v in pts)
+
+
+def test_messages_from_log(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    now = time.time()
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    rows = [
+        {"type": "event", "unit": "crawl", "link": "hub", "name": "notice", "kind": "greet", "text": "Welcome back.", "ts": now - 60},
+        {"type": "event", "unit": "crawl", "link": "hub", "name": "speech", "via": "notification", "text": "hi!", "ts": now - 30},
+        {"type": "event", "unit": "crawl", "name": "clap", "ts": now - 20},
+    ]
+    (data / f"log_{day}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    fake = tmp_path / "bridge" / "bridge.py"
+    fake.parent.mkdir()
+    monkeypatch.setattr(B, "__file__", str(fake))
+    items = B.read_messages(now - 3600, now + 1)
+    assert [(i["from"], i["text"]) for i in items] == [("creature", "Welcome back."), ("owner", "hi!")]
+
+
+@pytest.mark.asyncio
+async def test_creature_says_posts_a_notice(tmp_path, monkeypatch):
+    s = store_without_logging(tmp_path)
+    seen = []
+    s.broadcast = lambda m: seen.append(m) or asyncio.sleep(0)
+    monkeypatch.setattr(B, "push_notice", lambda *a: None)
+    await B.creature_says(s, "crawl", "Hello there")
+    assert any(m.get("name") == "notice" and m.get("kind") == "say" and m.get("text") == "Hello there" for m in seen)

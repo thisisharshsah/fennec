@@ -8,9 +8,23 @@ final class AppModel {
     let browser = BonjourBrowser()
     let navigator = Navigator()
     let client: BridgeClient
+    let notifier: CreatureNotifier
 
     init() {
         client = BridgeClient(store: store)
+        notifier = CreatureNotifier(client: client)
+        store.onEvent = { [weak self] event in
+            guard let self else { return }
+            self.notifier.handle(event, creatureName: self.store.registry.name(for: event.unit))
+        }
+        store.messages.onUnreadChange = { [weak self] count in
+            self?.notifier.setBadge(count)
+        }
+        notifier.onOpenConversation = { [weak self] unit in
+            guard let self else { return }
+            self.store.messages.markRead(unit)
+            self.navigator.open(self.store.registry.currentID(for: unit), section: .chat)
+        }
     }
 
     var desiredEndpoint: BridgeEndpoint {
@@ -21,9 +35,29 @@ final class AppModel {
     }
 
     func start() {
+        #if DEBUG
+        // `-skipNotificationPrompt 1` keeps the permission alert off headless screenshots.
+        if !UserDefaults.standard.bool(forKey: "skipNotificationPrompt") { notifier.requestAuthorization() }
+        #else
+        notifier.requestAuthorization()
+        #endif
         browser.start()
         client.fallback = settings.manualEndpoint
         client.connect(to: desiredEndpoint)
+    }
+
+    /// Asks the hub for the conversation again (pull to refresh).
+    func refreshMessages() async {
+        client.send(.messages(days: MessageStore.historyDays))
+        try? await Task.sleep(for: .milliseconds(600))
+    }
+
+    /// Sends the owner's message to a creature and shows it at once.
+    func sendMessage(_ text: String, to unit: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, isHubConnected else { return }
+        store.messages.addPendingReply(trimmed, unit: unit)
+        client.send(.reply(trimmed, unit: unit))
     }
 
     /// `host:port` a unit should connect to over Wi-Fi: the bridge's LAN address and unit port from

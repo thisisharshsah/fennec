@@ -10,6 +10,9 @@ enum BridgeMessage: Sendable {
     case unitHello(HelloMessage)
     case status(StatusMessage)
     case series(SeriesMessage)
+    case life(Bool)
+    /// The conversation from the hub's log (notices and the owner's replies), oldest first.
+    case messages([MessageItem])
 }
 
 struct BridgeMessageError: Error {
@@ -23,6 +26,10 @@ extension BridgeMessage {
 
     private struct HistoryPayload: Decodable {
         let events: [EventMessage]
+    }
+
+    private struct MessagesPayload: Decodable {
+        let items: [MessageItem]
     }
 
     static func decode(_ data: Data) throws -> BridgeMessage {
@@ -39,6 +46,8 @@ extension BridgeMessage {
         case "unit_status": return .unitStatus(try decoder.decode(UnitStatusMessage.self, from: data))
         case "body": return .body(try decoder.decode(BodyMessage.self, from: data))
         case "series": return .series(try decoder.decode(SeriesMessage.self, from: data))
+        case "life": return .life(try decoder.decode(LifeMessage.self, from: data).enabled ?? false)
+        case "messages": return .messages(try decoder.decode(MessagesPayload.self, from: data).items)
         default: throw BridgeMessageError(type: type)
         }
     }
@@ -49,6 +58,8 @@ struct HelloMessage: Decodable, Sendable {
     var lanIP: String?
     var unitPort: Int?
     var units: [UnitSummary]?
+    /// Whether the hub's daily-life rules are on.
+    var life: Bool?
     var unit: String?
     var fw: String?
     var sensors: [String]?
@@ -57,7 +68,7 @@ struct HelloMessage: Decodable, Sendable {
     var ts: Double?
 
     enum CodingKeys: String, CodingKey {
-        case bridge, units, unit, fw, sensors, wifi, link, ts
+        case bridge, units, unit, fw, sensors, wifi, link, ts, life
         case lanIP = "lan_ip"
         case unitPort = "unit_port"
     }
@@ -165,10 +176,14 @@ struct EventMessage: Decodable, Sendable {
     var name: String
     var mm: Double?
     var text: String?
+    /// For hub notices: greet, morning, break, warm, goodnight.
+    var kind: String?
+    /// "notification" on speech that is the owner's reply to a notification.
+    var via: String?
     var durationS: Double?
 
     enum CodingKeys: String, CodingKey {
-        case unit, link, ts, t, name, mm, text
+        case unit, link, ts, t, name, mm, text, kind, via
         case durationS = "duration_s"
     }
 }
@@ -208,4 +223,18 @@ struct SeriesMessage: Decodable, Sendable {
     var request: String?
     var points: [[Double]]?
     var error: String?
+}
+
+struct LifeMessage: Decodable, Sendable {
+    var enabled: Bool?
+}
+
+/// One line of the conversation as the hub keeps it: `from` is "creature" or "owner".
+struct MessageItem: Decodable, Sendable {
+    var id: String
+    var unit: String?
+    var ts: Double
+    var from: String?
+    var kind: String?
+    var text: String?
 }

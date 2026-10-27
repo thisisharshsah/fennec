@@ -17,6 +17,8 @@ struct BridgeCommand: Encodable, Sendable {
     var field: String?
     var seconds: Double?
     var request: String?
+    var on: Int?
+    var days: Int?
 
     static func express(_ mood: Mood, unit: String) -> BridgeCommand {
         BridgeCommand(cmd: "express", unit: unit, mood: mood.rawValue)
@@ -56,6 +58,26 @@ struct BridgeCommand: Encodable, Sendable {
 
     static func forgetWifi(unit: String) -> BridgeCommand {
         BridgeCommand(cmd: "forget_wifi", unit: unit)
+    }
+
+    /// The owner's answer to something the creature said; the hub turns it into a speech event.
+    static func reply(_ text: String, unit: String) -> BridgeCommand {
+        BridgeCommand(cmd: "reply", unit: unit, text: text)
+    }
+
+    /// Makes the creature "say" something (a notification on the phone until it has a speaker).
+    static func say(_ text: String, unit: String) -> BridgeCommand {
+        BridgeCommand(cmd: "say", unit: unit, text: text)
+    }
+
+    /// Turns the hub's daily-life rules on or off (answered by the hub, not a unit).
+    static func life(_ enabled: Bool) -> BridgeCommand {
+        BridgeCommand(cmd: "life", unit: "", on: enabled ? 1 : 0)
+    }
+
+    /// Asks the hub for the conversation of the last `days` days (all creatures).
+    static func messages(days: Int) -> BridgeCommand {
+        BridgeCommand(cmd: "messages", unit: "", days: days)
     }
 
     /// Asks the hub (not the unit) for one field's history from its log.

@@ -254,20 +254,20 @@ def room_summary(hours: float = 6, unit: str = "desk") -> dict:
 
 
 @mcp.tool()
-async def speak(text: str, voice: str = "") -> str:
-    """Say something out loud in the room through the Mac's speaker. Keep it short; this is the
-    creature's voice (bridge/voice.py must be running)."""
+async def speak(text: str, voice: str = "", unit: str = "") -> str:
+    """Say something to the owner as the creature. With a speaker unit (bridge/voice.py) it is spoken
+    aloud; otherwise it arrives as a notification on the owner's phone ("<creature> says ..."). The
+    owner can reply to the notification; replies come back as `speech` events with `via`
+    "notification", so wait_for_event(["speech"]) to hear the answer. Keep it short."""
     for u in units.values():
-        if "mac-speaker" in ((u.get("hello") or {}).get("sensors") or []):
-            unit = u["unit"]
-            break
-    else:
-        unit = "mac-voice"
-    msg = {"cmd": "speak", "unit": unit, "text": text}
-    if voice:
-        msg["voice"] = voice
-    await outgoing.put(msg)
-    return f"speaking via {unit}"
+        if u.get("connected") and "mac-speaker" in ((u.get("hello") or {}).get("sensors") or []):
+            msg = {"cmd": "speak", "unit": u["unit"], "text": text}
+            if voice:
+                msg["voice"] = voice
+            await outgoing.put(msg)
+            return f"speaking aloud via {u['unit']}"
+    await outgoing.put({"cmd": "say", "unit": unit, "text": text})
+    return "sent as a notification to the owner's phone"
 
 
 @mcp.tool()

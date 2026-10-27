@@ -12,15 +12,17 @@ struct CreatureDetailView: View {
     @State private var confirmRemove = false
     @State private var identifiedAt: Date?
     @State private var section: Section = Self.launchSection
+    @State private var chatFilter: MessageTopic?
 
     enum Section: String, CaseIterable, Identifiable {
-        case play = "Play", senses = "Senses", activity = "Activity", manage = "Manage"
+        case play = "Play", senses = "Senses", activity = "Activity", chat = "Chat", manage = "Manage"
         var id: String { rawValue }
         var systemImage: String {
             switch self {
             case .play: "face.smiling"
             case .senses: "waveform.path.ecg"
             case .activity: "clock"
+            case .chat: "bubble.left.and.bubble.right"
             case .manage: "slider.horizontal.3"
             }
         }
@@ -51,6 +53,8 @@ struct CreatureDetailView: View {
 
     var body: some View {
         let unit = unit
+        let chat = ConversationThread.filtered(model.store.messages.messages(for: unitID), by: chatFilter)
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(spacing: Theme.Spacing.l) {
                 CreatureHero(unit: unit, name: name, compact: true)
@@ -74,6 +78,12 @@ struct CreatureDetailView: View {
                             limit: 40
                         )
                         .padding(.horizontal, Theme.Spacing.l)
+                    case .chat:
+                        VStack(spacing: 0) {
+                            ConversationThread(messages: chat, name: name, filter: chatFilter)
+                            Color.clear.frame(height: 1).id(ConversationThread.endID)
+                        }
+                        .padding(.horizontal, Theme.Spacing.l)
                     case .manage:
                         VStack(spacing: Theme.Spacing.l) {
                             manageCard(unit: unit)
@@ -89,6 +99,24 @@ struct CreatureDetailView: View {
             .frame(maxWidth: .infinity)
             .animation(.easeInOut(duration: 0.2), value: section)
         }
+        .onChange(of: section) { scrollToChatEnd(proxy, animated: false) }
+        .onChange(of: chat.last?.id) { scrollToChatEnd(proxy, animated: true) }
+        .onAppear { scrollToChatEnd(proxy, animated: false) }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if section == .chat {
+                ChatComposer(unitID: unitID, name: name)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .refreshable { await model.refreshMessages() }
+        .onAppear {
+            consumePendingSection()
+            markChatReadIfShown()
+        }
+        .onChange(of: model.navigator.pendingSection) { consumePendingSection() }
+        .onChange(of: section) { markChatReadIfShown() }
+        .onChange(of: model.store.messages.unreadCount(for: unitID)) { markChatReadIfShown() }
         .scrollDismissesKeyboard(.interactively)
         .screenBackground()
         .navigationTitle(name)
@@ -96,6 +124,11 @@ struct CreatureDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
+            if section == .chat {
+                ToolbarItem(placement: .primaryAction) {
+                    ConversationFilterMenu(filter: $chatFilter)
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button { identify() } label: { Label("Identify", systemImage: "hand.wave") }
@@ -137,6 +170,33 @@ struct CreatureDetailView: View {
 
     /// Plumbing, not things that happened in the room.
     static let internalEvents: Set<String> = ["wifi_cmd", "error", "setup", "journal", "ack"]
+
+    // MARK: Chat
+
+    private func scrollToChatEnd(_ proxy: ScrollViewProxy, animated: Bool) {
+        guard section == .chat else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(60))
+            if animated {
+                withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(ConversationThread.endID, anchor: .bottom) }
+            } else {
+                proxy.scrollTo(ConversationThread.endID, anchor: .bottom)
+            }
+        }
+    }
+
+    private func markChatReadIfShown() {
+        if section == .chat { model.store.messages.markRead(unitID) }
+    }
+
+    /// A notification was opened for this creature: show its conversation.
+    private func consumePendingSection() {
+        guard let pending = model.navigator.pendingSection,
+              model.store.registry.currentID(for: pending.unitID) == unitID else { return }
+        section = pending.section
+        model.navigator.pendingSection = nil
+        markChatReadIfShown()
+    }
 
     // MARK: Section picker
 

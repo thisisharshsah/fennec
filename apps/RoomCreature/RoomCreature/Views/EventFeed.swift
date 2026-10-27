@@ -59,7 +59,7 @@ private struct EventRow: View {
     }
 
     private var mainLine: String {
-        if let text = event.text, !text.isEmpty { return "“\(text)”" }
+        if let text = event.text, !text.isEmpty { return event.isNotice ? text : "“\(text)”" }
         return event.title
     }
 
@@ -72,7 +72,8 @@ private struct EventRow: View {
     }
 
     private var tint: Color {
-        switch event.name {
+        if event.isNotice { return Theme.MoodColor.color(for: .pleased) }
+        return switch event.name {
         case "speech", "spoke": Theme.MoodColor.color(for: .curious)
         case "someone_in_front", "someone_left": Theme.MoodColor.color(for: .listening)
         case "clap", "knock", "moved": Theme.MoodColor.color(for: .alert)

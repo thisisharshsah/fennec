@@ -23,10 +23,12 @@ import time
 import serial
 import serial.tools.list_ports
 import websockets
+
+from life import Life
 from zeroconf import ServiceInfo
 from zeroconf.asyncio import AsyncZeroconf
 
-BRIDGE_VERSION = "0.3.1"
+BRIDGE_VERSION = "0.4.0"
 QUIET_TIMEOUT_S = 10    # a unit silent this long is disconnected
 LOG_KEEP_DAYS = 14
 UNIT_PORT = 8778        # TCP, units over Wi-Fi
@@ -61,6 +63,7 @@ def lan_ip():
 class Store:
     def __init__(self):
         self.lan_ip = "127.0.0.1"
+        self.life_hook = None                 # set by main(): the daily-life rules see every message
         self.links = []                       # every Link ever opened; dead ones are pruned on claim
         self.units = {}                       # name -> {"connected", "last_state", "hello"}
         self.events = collections.deque(maxlen=500)
@@ -92,7 +95,9 @@ class Store:
             d = {k: v for k, v in u.items() if not k.startswith("_")}
             d["sensors"] = (u.get("hello") or {}).get("sensors")
             units.append(d)
-        return {"type": "hello", "bridge": BRIDGE_VERSION, "lan_ip": self.lan_ip, "unit_port": UNIT_PORT, "units": units}
+        life = getattr(self, "life", None)
+        return {"type": "hello", "bridge": BRIDGE_VERSION, "lan_ip": self.lan_ip, "unit_port": UNIT_PORT, "units": units,
+                "life": bool(life and life.enabled)}
 
     def history_message(self):
         return {"type": "history", "events": list(self.events)[-HISTORY:]}
@@ -124,6 +129,8 @@ class Store:
 
     async def broadcast(self, msg):
         self.record(msg)
+        if self.life_hook:
+            await self.life_hook(msg)
         if not self.clients:
             return
         text = json.dumps(msg)
@@ -544,6 +551,46 @@ def read_series(unit, field, since, until):
     return out
 
 
+def read_messages(since, until, unit=None):
+    """The conversation from the log: what creatures said (notices) and the owner's replies."""
+    data = pathlib.Path(__file__).resolve().parent.parent / "data"
+    out = []
+    for f in sorted(data.glob("log_*.jsonl")):
+        try:
+            day = time.mktime(time.strptime(f.stem[4:], "%Y-%m-%d"))
+        except ValueError:
+            continue
+        if day + 86400 < since or day > until:
+            continue
+        with open(f) as fh:
+            for line in fh:
+                if '"notice"' not in line and '"notification"' not in line:
+                    continue
+                try:
+                    m = json.loads(line)
+                except ValueError:
+                    continue
+                if m.get("type") != "event" or not (since <= m.get("ts", 0) <= until):
+                    continue
+                if unit and m.get("unit") != unit:
+                    continue
+                if m.get("name") == "notice":
+                    out.append({"id": f'{m.get("unit")}|{m["ts"]}|notice', "unit": m.get("unit"), "ts": m["ts"],
+                                "from": "creature", "kind": m.get("kind"), "text": m.get("text", "")})
+                elif m.get("name") == "speech" and m.get("via") == "notification":
+                    out.append({"id": f'{m.get("unit")}|{m["ts"]}|reply', "unit": m.get("unit"), "ts": m["ts"],
+                                "from": "owner", "kind": "reply", "text": m.get("text", "")})
+    return out
+
+
+async def answer_messages(ws, msg):
+    until = time.time()
+    since = until - float(msg.get("days", 14)) * 86400
+    loop = asyncio.get_running_loop()
+    items = await loop.run_in_executor(None, read_messages, since, until, msg.get("unit"))
+    await ws.send(json.dumps({"type": "messages", "items": items}))
+
+
 async def answer_series(ws, msg):
     field = msg.get("field")
     unit = msg.get("unit")
@@ -571,6 +618,21 @@ async def ws_handler(ws, store, serial_link):
                 continue
             if msg.get("cmd") == "series":                   # answered by the hub from its log, not sent to a unit
                 await answer_series(ws, msg)
+            elif msg.get("cmd") == "messages":               # conversation history from the log
+                await answer_messages(ws, msg)
+            elif msg.get("cmd") == "say":                    # the creature "says" something: a notice on the phone
+                await creature_says(store, msg.get("unit") or body_unit(store) or "creature", str(msg.get("text", ""))[:300])
+            elif msg.get("cmd") == "reply":                  # the owner answered a notification: like speech to the creature
+                text = str(msg.get("text", "")).strip()[:300]
+                if text:
+                    await store.broadcast({"type": "event", "unit": msg.get("unit") or "phone", "link": "hub",
+                                           "name": "speech", "text": text, "via": "notification", "t": 0, "ts": time.time()})
+            elif msg.get("cmd") == "life":                   # daily-life rules on or off, kept across restarts
+                life = getattr(store, "life", None)
+                if life is not None and "on" in msg:
+                    life.enabled = bool(msg["on"])
+                    LIFE_FILE.write_text(json.dumps({"enabled": life.enabled}))
+                await ws.send(json.dumps({"type": "life", "enabled": bool(life and life.enabled)}))
             elif "cmd" in msg:
                 await route_command(store, msg)
     except websockets.ConnectionClosed:
@@ -594,6 +656,75 @@ async def register_bonjour(port):
     except Exception as e:
         log.warning("bonjour registration failed: %s", e)
     return zc, ip
+
+
+LIFE_FILE = pathlib.Path(__file__).resolve().parent.parent / "data" / "life.json"
+
+
+NOTIFY_FILE = pathlib.Path(__file__).resolve().parent.parent / "data" / "notify.json"
+
+
+def notify_config():
+    """{"ntfy_topic": "...", "ntfy_server": "https://ntfy.sh"}; absent or empty topic means off."""
+    try:
+        cfg = json.loads(NOTIFY_FILE.read_text())
+    except (OSError, ValueError):
+        return None
+    return cfg if cfg.get("ntfy_topic") else None
+
+
+def push_notice(unit, kind, text):
+    """Relay a notice to the owner's phone through ntfy, when configured. Runs in a thread."""
+    cfg = notify_config()
+    if not cfg:
+        return
+    import urllib.request
+    url = cfg.get("ntfy_server", "https://ntfy.sh").rstrip("/") + "/" + cfg["ntfy_topic"]
+    title = {"say": f"{unit.capitalize()} says", "greet": "Welcome back", "morning": "Good morning",
+             "break": "Break time", "warm": "Warm room", "goodnight": "Goodnight"}.get(kind, unit.capitalize())
+    req = urllib.request.Request(url, data=text.encode(), method="POST",
+                                 headers={"Title": title.encode().decode("latin1", "ignore"), "Tags": "fox_face"})
+    try:
+        urllib.request.urlopen(req, timeout=5).read()
+    except Exception as e:
+        log.warning("ntfy push failed: %s", e)
+
+
+async def post_notice(store, unit, kind, text):
+    log.info("notice: %s %s: %s", unit, kind, text)
+    await store.broadcast({"type": "event", "unit": unit, "link": "hub", "name": "notice",
+                           "kind": kind, "text": text, "t": 0, "ts": time.time()})
+    asyncio.get_running_loop().run_in_executor(None, push_notice, unit, kind, text)
+
+
+async def creature_says(store, unit, text):
+    if not text:
+        return
+    await route_command(store, {"cmd": "chirp", "unit": unit, "name": "hello"})   # silent until a speaker is fitted
+    await post_notice(store, unit, "say", text)
+
+
+async def run_life(store, life, actions, notices):
+    for unit, cmd in actions:
+        await route_command(store, dict(cmd, unit=unit))
+    for unit, kind, text in notices:
+        await post_notice(store, unit, kind, text)
+
+
+async def life_loop(store, life):
+    while True:
+        await asyncio.sleep(15)
+        try:
+            await run_life(store, life, *life.tick())
+        except Exception as e:  # never let a rule take the hub down
+            log.warning("life tick failed: %s", e)
+
+
+def load_life_enabled():
+    try:
+        return bool(json.loads(LIFE_FILE.read_text()).get("enabled", True))
+    except (OSError, ValueError):
+        return True
 
 
 async def housekeeping(store):
@@ -644,10 +775,23 @@ async def main():
     async with websockets.serve(lambda ws: ws_handler(ws, store, serial_link), "0.0.0.0", args.ws_port), tcp_server, http_server:
         log.info("bridge %s  apps: ws://%s:%d/  units: tcp %s:%d, http://%s:%d/event", BRIDGE_VERSION, ip, args.ws_port, ip, UNIT_PORT, ip, HTTP_PORT)
         keeper = asyncio.create_task(housekeeping(store))
+        life = Life()
+        life.enabled = load_life_enabled()
+        store.life = life
+
+        async def hook(msg):
+            try:
+                await run_life(store, life, *life.observe(msg))
+            except Exception as e:
+                log.warning("life rule failed: %s", e)
+        store.life_hook = hook
+        lifer = asyncio.create_task(life_loop(store, life))
+        log.info("daily life %s", "on" if life.enabled else "off")
         try:
             await serial_link.run()
         finally:
             keeper.cancel()
+            lifer.cancel()
             await zc.async_unregister_all_services()
             await zc.async_close()
 

@@ -9,7 +9,15 @@ final class Navigator {
         case creature(String)
         case history(String)
         case wifi(String)
+        /// Every creature's conversation, one row each.
+        case messages
+        /// One creature's conversation on its own page.
+        case conversation(String)
     }
+
+    /// Mac sidebar tag of the Messages row (a hub id never contains "#").
+    static let messagesSelection = "#messages"
+
 
     /// Why the Add flow is open; changes the intro text.
     enum AddReason: Equatable {
@@ -26,6 +34,13 @@ final class Navigator {
     var isAddingCreature = false
     private(set) var addReason: AddReason = .new
     var isShowingSettings = false
+    /// A section a creature page should switch to when it appears (set when a notification is opened).
+    struct PendingSection: Equatable {
+        let unitID: String
+        let section: CreatureDetailView.Section
+    }
+
+    var pendingSection: PendingSection?
 
     /// After setup ends before the new creature is back on the hub: open it when a creature on this
     /// network comes online, within two minutes.
@@ -36,12 +51,23 @@ final class Navigator {
         isAddingCreature = true
     }
 
-    func open(_ unitID: String) {
+    func open(_ unitID: String, section: CreatureDetailView.Section? = nil) {
+        pendingSection = section.map { PendingSection(unitID: unitID, section: $0) }
         #if os(macOS)
         selection = unitID
         path = []
         #else
         path = [.creature(unitID)]
+        #endif
+    }
+
+    /// The list of conversations.
+    func openMessages() {
+        #if os(macOS)
+        selection = Self.messagesSelection
+        path = []
+        #else
+        path = [.messages]
         #endif
     }
 

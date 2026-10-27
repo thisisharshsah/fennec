@@ -9,6 +9,10 @@ final class RoomStore {
     private(set) var unitsByID: [String: UnitState] = [:]
     private(set) var events: [RoomEvent] = []
     private(set) var bridgeVersion: String?
+    /// The hub's daily-life rules (greetings, break reminders, goodnight); nil until the hub says.
+    private(set) var lifeEnabled: Bool?
+    /// Called with each live event as it arrives (the notifier listens).
+    @ObservationIgnored var onEvent: ((RoomEvent) -> Void)?
     private(set) var bridgeLanIP: String?
     private(set) var bridgeUnitPort: Int?
     private(set) var wifiRequests: [String: Date] = [:]
@@ -16,6 +20,8 @@ final class RoomStore {
     private(set) var series: [String: [(time: Date, value: Double)]] = [:]
     /// Creatures known to this app, persisted across launches.
     let registry = CreatureRegistry()
+    /// What the creatures said and the owner's replies.
+    let messages = MessageStore()
 
     var units: [UnitState] {
         unitsByID.values.sorted { $0.id < $1.id }
@@ -29,8 +35,13 @@ final class RoomStore {
                     pair.count == 2 ? (Date(timeIntervalSince1970: pair[0]), pair[1]) : nil
                 }
             }
+        case .messages(let items):
+            messages.ingest(items.compactMap(CreatureMessage.init))
+        case .life(let enabled):
+            lifeEnabled = enabled
         case .hello(let hello):
             bridgeVersion = hello.bridge
+            lifeEnabled = hello.life ?? lifeEnabled
             bridgeLanIP = hello.lanIP
             bridgeUnitPort = hello.unitPort
             for summary in hello.units ?? [] {
@@ -55,6 +66,7 @@ final class RoomStore {
             }
         case .history(let history):
             merge(history.map { RoomEvent($0) })
+            messages.ingest(history.compactMap(CreatureMessage.init))
         case .state(let state):
             update(state.unit ?? "unknown") { unit in
                 unit.isConnected = true
@@ -74,7 +86,10 @@ final class RoomStore {
                     unit.lastSeen = Self.time(event.ts)
                 }
             }
-            merge([RoomEvent(event)])
+            let roomEvent = RoomEvent(event)
+            merge([roomEvent])
+            if let message = CreatureMessage(event) { messages.ingest([message]) }
+            onEvent?(roomEvent)
         case .unitStatus(let status):
             update(status.unit, announced: status.connected) { unit in
                 unit.isConnected = status.connected

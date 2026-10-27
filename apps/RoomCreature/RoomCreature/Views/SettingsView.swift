@@ -5,12 +5,16 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
     @State private var hostDraft = ""
     @State private var portDraft = 8777
 
     var body: some View {
         @Bindable var settings = model.settings
         Form {
+            lifeSection
+            NotificationSettingsSections(notifier: model.notifier, openSystemSettings: openSystemSettings)
             connectionSection(settings: settings)
             SavedWifiPasswordsSection()
             aboutSection
@@ -28,6 +32,10 @@ struct SettingsView: View {
             }
         }
         .onAppear(perform: loadDrafts)
+        .task { await model.notifier.refreshPermission() }
+        .onChange(of: scenePhase) {
+            if scenePhase == .active { Task { await model.notifier.refreshPermission() } }
+        }
     }
 
     // MARK: Connection
@@ -76,6 +84,25 @@ struct SettingsView: View {
 
     // MARK: About
 
+    private var lifeSection: some View {
+        Section {
+            Toggle(isOn: Binding(
+                get: { model.store.lifeEnabled ?? true },
+                set: { enabled in
+                    Haptics.light()
+                    model.client.send(.life(enabled))
+                }
+            )) {
+                Label("Daily life", systemImage: "sparkles")
+            }
+            .disabled(model.store.lifeEnabled == nil)
+        } header: {
+            Text("Behaviour")
+        } footer: {
+            Text("Your creatures greet you when you come back, say good morning and goodnight, suggest a break after 50 minutes in front of them, and notice when the room gets warm. Each one at most once in a while.")
+        }
+    }
+
     private var aboutSection: some View {
         Section {
             LabeledContent("App version", value: Self.appVersion)
@@ -91,6 +118,15 @@ struct SettingsView: View {
         } header: {
             Label("About", systemImage: "info.circle")
         }
+    }
+
+    private func openSystemSettings() {
+        #if os(iOS)
+        let link = UIApplication.openSettingsURLString
+        #else
+        let link = "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+        #endif
+        if let url = URL(string: link) { openURL(url) }
     }
 
     private static var appVersion: String {
@@ -114,5 +150,112 @@ struct SettingsView: View {
         guard !host.isEmpty, (1...65535).contains(portDraft) else { return }
         model.settings.host = host
         model.settings.port = portDraft
+    }
+}
+
+// MARK: - Notifications
+
+/// How the creature's messages arrive. Whatever is chosen, every message stays in Messages.
+private struct NotificationSettingsSections: View {
+    @Bindable var notifier: CreatureNotifier
+    let openSystemSettings: () -> Void
+
+    var body: some View {
+        Section {
+            permissionRow
+            Toggle(isOn: $notifier.isEnabled) {
+                Label("Notify me", systemImage: "bell.badge")
+            }
+            Group {
+                Toggle(isOn: $notifier.playsSound) {
+                    Label("Sound", systemImage: "speaker.wave.2")
+                }
+                .disabled(notifier.isFocused)
+                Toggle(isOn: $notifier.isFocused) {
+                    Label("Focus", systemImage: "moon.circle")
+                }
+            }
+            .disabled(!notifier.isEnabled)
+        } header: {
+            Label("Notifications", systemImage: "bell")
+        } footer: {
+            Text("Every message is kept in Messages. Focus delivers them quietly to Notification Center: no banner, no sound.")
+        }
+
+        Section {
+            ForEach(MessageTopic.allCases) { topic in
+                Toggle(isOn: Binding(
+                    get: { notifier.isOn(topic) },
+                    set: { notifier.set(topic, on: $0) }
+                )) {
+                    Label(topic.settingTitle, systemImage: topic.systemImage)
+                }
+            }
+        } header: {
+            Text("Notify me about")
+        }
+        .disabled(!notifier.isEnabled)
+
+        Section {
+            Toggle(isOn: $notifier.usesQuietHours) {
+                Label("Quiet hours", systemImage: "moon.zzz")
+            }
+            if notifier.usesQuietHours {
+                DatePicker("From", selection: time($notifier.quietStart), displayedComponents: .hourAndMinute)
+                DatePicker("Until", selection: time($notifier.quietEnd), displayedComponents: .hourAndMinute)
+            }
+        } footer: {
+            Text("During quiet hours notifications arrive silently in Notification Center and wait in Messages.")
+        }
+        .disabled(!notifier.isEnabled)
+    }
+
+    @ViewBuilder
+    private var permissionRow: some View {
+        LabeledContent("Permission") {
+            HStack(spacing: Theme.Spacing.s) {
+                StatusDot(color: permissionColor)
+                Text(permissionText)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+        }
+        switch notifier.permission {
+        case .denied:
+            Button("Open system settings", action: openSystemSettings)
+        case .notAsked:
+            Button("Allow notifications") { notifier.requestAuthorization() }
+        case .granted, .unknown:
+            EmptyView()
+        }
+    }
+
+    private var permissionText: String {
+        switch notifier.permission {
+        case .granted: "Allowed"
+        case .denied: "Off in system settings"
+        case .notAsked: "Not asked yet"
+        case .unknown: "Checking"
+        }
+    }
+
+    private var permissionColor: Color {
+        switch notifier.permission {
+        case .granted: Theme.positive
+        case .denied: Theme.negative
+        case .notAsked, .unknown: Theme.inactive
+        }
+    }
+
+    /// Minutes after midnight shown as a time of day.
+    private func time(_ minutes: Binding<Int>) -> Binding<Date> {
+        Binding(
+            get: {
+                Calendar.current.date(bySettingHour: minutes.wrappedValue / 60, minute: minutes.wrappedValue % 60, second: 0, of: .now) ?? .now
+            },
+            set: { date in
+                let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+                minutes.wrappedValue = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
+            }
+        )
     }
 }

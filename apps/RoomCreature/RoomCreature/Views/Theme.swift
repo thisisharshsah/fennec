@@ -47,6 +47,8 @@ enum Theme {
     static let textPrimary = Color.adaptive(light: "#15181F", dark: "#F2F4F8")
     static let textSecondary = Color.adaptive(light: "#6B7384", dark: "#98A1B3")
     static let accent = Color.adaptive(light: "#3B6FE0", dark: "#8FB3FF")
+    /// Text and icons drawn on an accent fill (the owner's chat bubbles).
+    static let onAccent = Color.adaptive(light: "#FFFFFF", dark: "#0D0F15")
     static let hairline = Color.primary.opacity(0.08)
     static let positive = Color.adaptive(light: "#2FA85A", dark: "#7DDF8A")
     static let warning = Color.adaptive(light: "#D98A1C", dark: "#FFB347")
