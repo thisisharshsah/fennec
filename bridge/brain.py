@@ -46,6 +46,23 @@ Do not offer help like an assistant; you are a companion. If the owner asks for 
 say so in a friendly way. If they seem stressed or tired, be gentle and brief."""
 
 
+def room_context(room, when=None):
+    """The facts that go in front of the owner's message."""
+    return "Room right now (from your sensors, " + (when or time.strftime("%A %H:%M")) + "):\n" + room
+
+
+def thought_prompt(facts, recent, when=None):
+    """What the brain is asked for one private thought."""
+    earlier = "\n".join(f"- {t}" for t in recent[-4:]) or "- (none yet)"
+    return ("What you sense right now (" + (when or time.strftime("%A %H:%M")) + "):\n" + facts
+            + "\n\nYour last few thoughts:\n" + earlier
+            + "\n\nWrite your next thought: one short first-person sentence, at most 20 words, about what "
+              "you notice or wonder right now. Use only the facts above: you have no light sensor and see "
+              "nothing beyond them, so do not invent sights, sounds or smells. Do not repeat your last "
+              "thoughts. Do not address your owner unless something seems wrong; if it does, say it "
+              "plainly and gently.")
+
+
 class Brain:
     def __init__(self, log):
         self.log = log
@@ -180,7 +197,7 @@ class Brain:
         if not turns or turns[-1]["role"] != "user":
             return None
         self.last_answer = time.time()
-        context = "Room right now (from your sensors, " + time.strftime("%A %H:%M") + "):\n" + room
+        context = room_context(room)
         turns[-1] = {"role": "user", "content": [
             {"type": "text", "text": context},
             {"type": "text", "text": turns[-1]["content"]},
@@ -194,15 +211,8 @@ class Brain:
         if not ok:
             return None
         self.last_answer = time.time()
-        earlier = "\n".join(f"- {t}" for t in recent[-4:]) or "- (none yet)"
-        prompt = ("What you sense right now (" + time.strftime("%A %H:%M") + "):\n" + facts
-                  + "\n\nYour last few thoughts:\n" + earlier
-                  + "\n\nWrite your next thought: one short first-person sentence, at most 20 words, about what "
-                    "you notice or wonder right now. Use only the facts above: you have no light sensor and see "
-                    "nothing beyond them, so do not invent sights, sounds or smells. Do not repeat your last "
-                    "thoughts. Do not address your owner unless something seems wrong; if it does, say it "
-                    "plainly and gently.")
-        return await self._create(PERSONA.format(name=name.capitalize()), [{"role": "user", "content": prompt}], "thought")
+        return await self._create(PERSONA.format(name=name.capitalize()),
+                                  [{"role": "user", "content": thought_prompt(facts, recent)}], "thought")
 
     async def _create(self, persona, turns, what):
         import anthropic
