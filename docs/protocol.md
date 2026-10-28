@@ -250,6 +250,15 @@ templates otherwise: `{"type":"event","name":"thought","text":"...","via":"brain
 `{"cmd":"messages"}` returns them with `"kind":"thought"`; they never notify
 and are not turns in the brain's conversation.
 
+All senses together: the scene also takes the creature's own state and
+events. Sound against the room's quiet level of the last ten minutes gives
+`sound` (quiet, voices, loud) and `talking` (voice level for 8 s with someone
+there); the distance sensor gives `distance_sensor` (someone within 1.2 m,
+nobody, or blocked when closer than 15 cm, which is ignored); being moved,
+picked up or shaken gives `creature_moved`. Agreement between the face, the
+model and the distance sensor sets `confidence` (high, medium, low). With
+the eye off, the distance sensor alone can still report `at_desk`.
+
 Corrections: `{"cmd":"correct","right":"working"}` (one of the activity
 names) or `{"cmd":"correct","description_wrong":1}`. The scene takes the
 owner's word for 90 s and drops the model's hints; the hub logs

@@ -139,3 +139,54 @@ def test_marking_the_sentence_wrong_drops_its_hints():
     assert "writing" in scene.hints(scene.clock())
     record = scene.correct(description_wrong=True)
     assert record["description_wrong"] and not scene.hints(scene.clock())
+
+
+def state(**fields):
+    return dict({"type": "state", "unit": "crawl"}, **fields)
+
+
+def test_sound_and_talking_join_the_picture():
+    clock = Clock()
+    scene = S.Scene(clock=clock)
+    for _ in range(20):                                    # learn the room's quiet level
+        scene.room(state(sound_db=32.0))
+        clock.t += 5
+    run(scene, clock, here(), 2)
+    assert scene.summary()["sound"] == "quiet" and "talking" not in scene.summary()
+    for _ in range(3):
+        scene.room(state(sound_db=46.0))
+        clock.t += 4
+    scene.update(here())
+    s = scene.summary()
+    assert s["sound"] == "voices" and s["talking"] is True
+    assert "voices in the room" in scene.sentence()
+
+
+def test_distance_sensor_keeps_the_picture_without_the_camera():
+    clock = Clock()
+    scene = S.Scene(clock=clock)
+    scene.room(state(tof_mm=600))
+    s = scene.summary()                                    # the eye never sent anything
+    assert s["activity"] == "at_desk" and s["confidence"] == "low"
+    scene.room(state(tof_mm=74))                           # something right in front of the sensor
+    assert scene.summary() is None
+
+
+def test_senses_agreeing_or_not_moves_the_confidence():
+    clock = Clock()
+    scene = S.Scene(clock=clock)
+    face = [[0.4, 0.5, 0.1, 0.15, 1]]
+    scene.room(state(tof_mm=600))
+    run(scene, clock, here(faces=face), 2)
+    assert scene.summary()["confidence"] == "high"
+    scene.room(state(tof_mm=3000))
+    run(scene, clock, here(), 1)
+    assert scene.summary()["confidence"] == "low"
+
+
+def test_being_moved_is_mentioned():
+    clock = Clock()
+    scene = S.Scene(clock=clock)
+    run(scene, clock, here(), 2)
+    scene.room({"type": "event", "unit": "crawl", "name": "picked_up"})
+    assert "I was just moved" in scene.sentence()

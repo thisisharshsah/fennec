@@ -50,3 +50,9 @@ def test_templates_add_one_worthwhile_detail():
     assert long == "You've been working for 50 minutes. A stretch might feel good. You're a bit hunched. Shoulders back?"
     assert mind.template(summary("on_call", tired=True), 30.0).endswith("You look tired, though.")
     assert mind.template(summary("away"), 31.0) == "The desk is empty. I'll keep watch."
+
+
+def test_a_thought_mentions_voices():
+    mind = M.Mind(clock=Clock())
+    assert mind.template(summary(talking=True), 25.0).endswith("I can hear voices.")
+    assert not mind.template(summary("on_call", talking=True), 25.0).endswith("voices.")

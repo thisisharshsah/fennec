@@ -1257,6 +1257,8 @@ async def main():
             try:
                 creature = body_unit(store) or store.last_creature      # still Crawl while it is offline
                 store.last_creature = creature
+                if creature and msg.get("unit") == creature:
+                    store.scene.room(msg)                          # sound, distance and motion join the scene
                 await run_safety(store, store.safety.observe(msg, creature))
                 if store.eye.observe(msg, body_unit(store)):
                     await store.eye.apply()

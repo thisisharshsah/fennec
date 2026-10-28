@@ -27,12 +27,19 @@ LABELS = {
     "writing": "writing on paper",
     "gaming": "playing a game",
     "watching": "watching a video",
+    "at_desk": "at the desk (the camera is off)",
     "working": "working at the desk",
 }
 SETTLE_S = 8
 STRETCH_SHOWS_S = 20
 FRESH_S = 10                     # an outline older than this means the eye stopped
 HINT_S = 45                      # a description's hints count this long (descriptions come every ~20 s)
+SOUND_WINDOW_S = 10 * 60          # the room's own quiet level is learned over this long
+VOICES_DB = 10.0                  # this far above the quiet level: voices or music
+LOUD_DB = 25.0
+TALK_S = 8                        # voice-level sound this long, with someone here: talking
+NEAR_MM, BLOCKED_MM = 1200, 150   # the distance sensor: someone within NEAR_MM; closer than BLOCKED_MM is an object
+MOVED_SHOWS_S = 60
 CORRECTED_S = 90                 # after the owner says what they are doing, believe them this long
 NOBODY_S = 25                    # "nobody is at the desk" overrules a shaky body detection until the next one
 NOTE_FRESH_S = 90
@@ -64,6 +71,53 @@ class Scene:
         self._hints = {}                  # hint -> when it was last confirmed
         self._recent = collections.deque(maxlen=3)   # the hints of the last three sentences
         self._corrected = None            # (activity, until): what the owner said they are doing
+        # the creature's own senses
+        self._sounds = collections.deque()
+        self.sound_db = None
+        self._voices_since = None
+        self.tof_mm = None
+        self.tof_at = float("-inf")
+        self._moved_at = float("-inf")
+
+    def room(self, msg):
+        """A state or event from the creature itself: sound, the distance sensor, being moved."""
+        now = self.clock()
+        if msg.get("type") == "event" and msg.get("name") in ("moved", "picked_up", "shaken"):
+            self._moved_at = now
+        if msg.get("type") != "state":
+            return
+        db = msg.get("sound_db")
+        if isinstance(db, (int, float)):
+            self.sound_db = db
+            self._sounds.append((now, db))
+            while self._sounds and now - self._sounds[0][0] > SOUND_WINDOW_S:
+                self._sounds.popleft()
+            if self.sound_level() in ("voices", "loud"):
+                self._voices_since = self._voices_since or now
+            else:
+                self._voices_since = None
+        mm = msg.get("tof_mm")
+        if isinstance(mm, (int, float)):
+            self.tof_mm, self.tof_at = mm, now
+
+    def sound_level(self):
+        """quiet, voices or loud, against the quietest the room has been lately."""
+        if self.sound_db is None or len(self._sounds) < 5:
+            return None
+        quiet = sorted(db for _, db in self._sounds)[len(self._sounds) // 10]
+        rise = self.sound_db - quiet
+        return "loud" if rise >= LOUD_DB else "voices" if rise >= VOICES_DB else "quiet"
+
+    def talking(self, now):
+        return self._voices_since is not None and now - self._voices_since >= TALK_S
+
+    def distance_sensor(self, now):
+        """someone, nobody, blocked (an object right in front of it), or None when it has not reported."""
+        if self.tof_mm is None or now - self.tof_at > 30:
+            return None
+        if 0 < self.tof_mm < BLOCKED_MM:
+            return "blocked"
+        return "someone" if 0 < self.tof_mm < NEAR_MM else "nobody"
 
     def describe(self, text):
         """The local model's sentence about the scene. Returns the hints found in it."""
@@ -155,10 +209,17 @@ class Scene:
         return self.activity is not None and self.clock() - self.view_at < FRESH_S
 
     def summary(self):
-        """The current picture for the agent and the apps, or None when the eye is not sending."""
+        """The current picture for the agent and the apps, from every sense. Without the eye, the
+        distance sensor can still say someone is at the desk; with neither, None."""
+        now = self.clock()
         if not self.fresh():
-            return None
-        v, now = self.view, self.clock()
+            if self.distance_sensor(now) != "someone":
+                return None
+            out = {"activity": "at_desk", "label": LABELS["at_desk"], "for_s": 0, "people": None,
+                   "looking_at_creature": False, "confidence": "low", "distance_sensor": "someone"}
+            self._senses(out, now)
+            return out
+        v = self.view
         out = {"activity": self.activity, "label": LABELS[self.activity], "for_s": round(now - self.since),
                "people": v.get("people", 0), "looking_at_creature": bool(v.get("looking"))}
         for key in ("posture", "things"):
@@ -168,11 +229,29 @@ class Scene:
             out["tired"] = True
         if self.note and now - self.note_at < NOTE_FRESH_S:
             out["description"] = self.note
-        # how sure: a face seen and the model agreeing raise it; the model seeing nobody lowers it
+        self._senses(out, now)
+        # how sure: a face, the model and the distance sensor agreeing raise it; disagreeing lowers it
         hints = self.hints(now)
-        sure = 0.5 + (0.2 if v.get("faces") else 0) + (0.2 if hints - {"nobody"} else 0) - (0.4 if "nobody" in hints else 0)
+        here = self.activity != "away"
+        sensor = out.get("distance_sensor")
+        sure = (0.5 + (0.2 if v.get("faces") else 0) + (0.2 if hints - {"nobody"} else 0) - (0.4 if "nobody" in hints else 0)
+                + (0.15 if sensor == ("someone" if here else "nobody") else 0)
+                - (0.25 if sensor == ("nobody" if here else "someone") else 0))
         out["confidence"] = "high" if sure >= 0.7 else "low" if sure < 0.4 else "medium"
         return out
+
+    def _senses(self, out, now):
+        """What the creature's own senses add: sound, talking, the distance sensor, being moved."""
+        level = self.sound_level()
+        if level:
+            out["sound"] = level
+        if self.talking(now) and out["activity"] not in ("away",):
+            out["talking"] = True
+        sensor = self.distance_sensor(now)
+        if sensor:
+            out["distance_sensor"] = sensor
+        if now - self._moved_at < MOVED_SHOWS_S:
+            out["creature_moved"] = True
 
     def sentence(self):
         """One line for the brain: "working at the desk for 25 min, slouching, looks tired, holding a drink"."""
@@ -187,6 +266,12 @@ class Scene:
             parts.append("leaning close to the screen")
         if s.get("tired"):
             parts.append("looks tired")
+        if s.get("talking"):
+            parts.append("talking" if s["activity"] in ("on_call", "on_phone", "with_someone") else "voices in the room")
+        elif s.get("sound") == "loud":
+            parts.append("the room is loud")
+        if s.get("creature_moved"):
+            parts.append("I was just moved")
         held = [t for t in s.get("things", []) if t not in ("cat", "dog")]
         if held and s["activity"] not in ("on_phone", "eating", "drinking", "reading"):
             parts.append("holding " + ", ".join(held))
@@ -196,4 +281,6 @@ class Scene:
         line = ", ".join(parts)
         if s.get("description"):
             line += f'. The camera\'s model says: "{s["description"]}"'
+        if s.get("confidence") == "low":
+            line += ". (Not sure about this.)"
         return line

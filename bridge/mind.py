@@ -72,4 +72,6 @@ class Mind:
                 line += " You're a bit hunched. Shoulders back?"
             elif temp is not None and temp >= WARM_C:
                 line += f" It's getting warm in here, {temp:.0f}°."
+            elif summary.get("talking") and activity not in ("on_call", "on_phone", "with_someone"):
+                line += " I can hear voices."
         return line
