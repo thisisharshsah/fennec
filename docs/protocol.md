@@ -250,11 +250,13 @@ templates otherwise: `{"type":"event","name":"thought","text":"...","via":"brain
 `{"cmd":"messages"}` returns them with `"kind":"thought"`; they never notify
 and are not turns in the brain's conversation.
 
-The brain (`bridge/brain.py`) answers with Crawl's own tuned model on the hub
-first, and with gpt-oss-20b through Farhelm, the local model gateway, while
-that model loads or if it fails. Nothing local falls back to a cloud model.
+The brain (`bridge/brain.py`) asks Farhelm, the owner's model hub, for the
+models tuned for Crawl in order (`crawl-4b`, then `crawl-2b`); a model Farhelm
+does not have is skipped for 10 minutes rather than answered by another one.
+When Farhelm cannot answer, Crawl's own copy of the tuned model answers on the
+hub. Nothing local falls back to a cloud model.
 `{"cmd":"brain"}` (with optional `on` and `daily_cap_usd`) returns
-`{"type":"brain","enabled","has_key","provider":"own|farhelm|anthropic","local","model","fallback","daily_cap_usd","spent_today_usd"}`.
+`{"type":"brain","enabled","has_key","provider":"farhelm|own|anthropic","local","model","fallback","daily_cap_usd","spent_today_usd"}`.
 
 All senses together: the scene also takes the creature's own state and
 events. Sound against the room's quiet level of the last ten minutes gives

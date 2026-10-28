@@ -289,10 +289,10 @@ struct BrainStatus: Decodable, Sendable, Equatable {
     var dailyCapUsd: Double?
     var spentTodayUsd: Double?
     var model: String?
-    /// "own" (Crawl's tuned model on the hub), "farhelm" (the owner's local model gateway) or "anthropic".
+    /// "farhelm" (the owner's model hub), "own" (Crawl's own copy on the hub) or "anthropic".
     var provider: String?
     var local: Bool?
-    /// The gateway model behind the own one, if any.
+    /// What answers when the first model cannot, in order, if anything.
     var fallback: String?
 
     enum CodingKeys: String, CodingKey {

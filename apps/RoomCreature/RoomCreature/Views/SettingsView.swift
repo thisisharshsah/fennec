@@ -129,11 +129,11 @@ struct SettingsView: View {
             }
             if let brain, brain.hasKey ?? false {
                 LabeledContent("Model") {
-                    Text(brain.provider == "own" ? "Crawl's own, on the hub"
-                         : (brain.local ?? false) ? "\(brain.model ?? "local"), on the hub" : (brain.model ?? "Claude"))
+                    Text(brain.provider == "farhelm" ? "\(brain.model ?? "local"), through Farhelm"
+                         : brain.provider == "own" ? "Crawl's own copy, on the hub" : (brain.model ?? "Claude"))
                 }
                 if let fallback = brain.fallback {
-                    LabeledContent("Fallback") { Text("\(fallback) through Farhelm") }
+                    LabeledContent("Then") { Text(fallback) }
                 }
             }
             if let brain, brain.hasKey ?? false, !(brain.local ?? false) {

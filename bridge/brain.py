@@ -2,14 +2,16 @@
 The creature answers back: when the owner replies in Chat, a language model
 writes the creature's answer from the room's context and the recent conversation.
 
-Where the answer comes from:
-1. Crawl's own small brain, on the hub itself: a model tuned for Crawl
-   (tools/bench/train.py), run with MLX on a thread of its own. Used when its
-   adapter is present (FENNEC_BRAIN_ADAPTER, default the tuned Qwen 3.5 4B in
-   data/train/adapters) and mlx_lm is installed; FENNEC_BRAIN_MODEL=off skips it.
-2. Farhelm, the owner's local model gateway, as the fallback while the own brain
-   loads or when it fails: FARHELM_API_URL, FARHELM_API_KEY and FARHELM_MODEL
-   (default gpt-oss-20b) from the environment or from fennec/.env.
+Where the answer comes from, in order:
+1. Farhelm, the owner's model hub, which keeps the models and the ones tuned for
+   Crawl: FARHELM_API_URL and FARHELM_API_KEY from the environment or from
+   fennec/.env. FARHELM_MODELS lists the models to ask, first one that answers
+   wins (default the tuned Qwen 3.5 4B, then the tuned 2B).
+2. Crawl's own copy on the hub, for when Farhelm cannot be reached (and for a
+   creature away from the Mac): the same tuned model run with MLX on a thread
+   of its own, loaded only when needed. Used when its adapter is present
+   (FENNEC_BRAIN_ADAPTER, default data/train/adapters) and mlx_lm is installed;
+   FENNEC_BRAIN_MODEL=off skips it.
    Like Farhelm itself, nothing local ever falls back to a cloud model.
 3. Claude directly, only when nothing local is set up: ANTHROPIC_API_KEY, or the
    file data/anthropic_key. A daily spending cap (data/brain.json, default
@@ -36,8 +38,10 @@ PRICE_CACHE_READ, PRICE_CACHE_WRITE = 0.20 / 1e6, 5.00 / 1e6
 DEFAULT_DAILY_CAP = 0.50
 MAX_TOKENS = 1024                                       # room for thinking plus a two sentence reply
 MIN_GAP_S = 3                                           # at most one answer every few seconds
+FARHELM_MODELS = "crawl-4b,crawl-2b"                     # tuned Qwen 3.5 4B and 2B, registered in Farhelm
 OWN_MODEL = "mlx-community/Qwen3.5-4B-4bit"             # benchmark: grounded 0.95, judge 3.9 / 4.7 / 3.8
 OWN_ADAPTER = DATA / "train" / "adapters" / "Qwen3.5-4B-4bit"
+MISSING_RETRY_S = 600                                   # how long a model Farhelm lacks is skipped
 OWN_TOKENS = 160                                        # what the benchmark gave it; replies are two sentences
 
 PERSONA = """You are {name}, a small creature that lives on your owner's desk. You look like a little \
@@ -146,6 +150,7 @@ class Brain:
         self._key_seen = None
         self.last_answer = 0.0
         self._own = None
+        self._missing = {}                                  # Farhelm model -> time to ask again
 
     # configuration
 
@@ -174,17 +179,18 @@ class Brain:
         return self._own
 
     def provider(self):
-        """("farhelm", url, key, model) or ("anthropic", None, key, MODEL) or None: the gateway behind
-        the own model, or Claude when nothing local is set up."""
+        """("farhelm", url, key, [models]) or ("anthropic", None, key, [MODEL]) or None: the model hub,
+        or Claude when nothing local is set up."""
         env = self._env()
         if env.get("FARHELM_API_URL") and env.get("FARHELM_API_KEY"):
-            return ("farhelm", env["FARHELM_API_URL"].rstrip("/"), env["FARHELM_API_KEY"], env.get("FARHELM_MODEL", "gpt-oss-20b"))
+            models = [m.strip() for m in env.get("FARHELM_MODELS", FARHELM_MODELS).split(",") if m.strip()]
+            return ("farhelm", env["FARHELM_API_URL"].rstrip("/"), env["FARHELM_API_KEY"], models)
         if self.own():
             return None
         key = env.get("ANTHROPIC_API_KEY")
         if not key and KEY_FILE.exists():
             key = KEY_FILE.read_text().strip()
-        return ("anthropic", None, key, MODEL) if key else None
+        return ("anthropic", None, key, [MODEL]) if key else None
 
     def _api_key(self):
         p = self.provider()
@@ -204,15 +210,17 @@ class Brain:
         today = dt.date.today().isoformat()
         spent = st.get("spent", {}).get(today, 0.0)
         p, own = self.provider(), self.own()
+        local = p is not None and p[0] == "farhelm"
+        backups = (p[3][1:] if local else []) + (["Crawl's own copy on the hub"] if own and p else [])
         return {
             "enabled": st.get("enabled", True),
             "has_key": p is not None or own is not None,
-            "provider": "own" if own else (p[0] if p else None),
-            "local": bool(own or (p and p[0] == "farhelm")),
+            "provider": p[0] if p else ("own" if own else None),
+            "local": local or (own is not None and p is None),
             "daily_cap_usd": st.get("daily_cap_usd", DEFAULT_DAILY_CAP),
             "spent_today_usd": round(spent, 4),
-            "model": ("Crawl's own brain" + (f", {p[3]} as fallback" if p else "")) if own else (p[3] if p else MODEL),
-            "fallback": p[3] if own and p else None,
+            "model": p[3][0] if p else ("Crawl's own copy" if own else MODEL),
+            "fallback": ", then ".join(backups) or None,
         }
 
     def configure(self, enabled=None, daily_cap_usd=None):
@@ -254,7 +262,7 @@ class Brain:
         p = self.provider()
         if self._client is None or p != self._key_seen:
             if p[0] == "farhelm":           # Anthropic-style /v1/messages on the owner's gateway
-                self._client = anthropic.AsyncAnthropic(base_url=p[1], api_key=p[2], max_retries=3)
+                self._client = anthropic.AsyncAnthropic(base_url=p[1], api_key=p[2], max_retries=1)
             else:
                 self._client = anthropic.AsyncAnthropic(api_key=p[2])
             self._key_seen = p
@@ -307,27 +315,34 @@ class Brain:
                                   [{"role": "user", "content": thought_prompt(facts, recent)}], "thought")
 
     async def _create(self, persona, turns, what):
+        provider = self.provider()
+        if provider and provider[0] == "farhelm":
+            for model in provider[3]:                     # Farhelm never swaps models itself: ask each in turn
+                if self._missing.get(model, 0) > time.time():
+                    continue
+                text = await self._create_remote(persona, turns, what, provider, model)
+                if text:
+                    return text
         own = self.own()
         if own:
             started = time.time()
-            text = await own.create(persona, turns)
+            text = await own.create(persona, turns)       # starts loading the first time; quiet until it has
             if text:
-                self.log.info("brain: %s in %d chars by its own model (%.1f s)", what, len(text), time.time() - started)
-                return text
-            if self.provider() is None:
-                if not own.failed:
-                    self.log.info("brain: own model still loading, no fallback set up")
-                return None
-        return await self._create_remote(persona, turns, what)
+                self.log.info("brain: %s in %d chars by its own copy (%.1f s)", what, len(text), time.time() - started)
+            elif not own.failed:
+                self.log.info("brain: own copy still loading")
+            return text
+        if provider and provider[0] == "anthropic":
+            return await self._create_remote(persona, turns, what, provider, MODEL)
+        return None
 
-    async def _create_remote(self, persona, turns, what):
+    async def _create_remote(self, persona, turns, what, provider, model):
         import anthropic
-        provider = self.provider()
         try:
             if provider[0] == "farhelm":
-                # the local gateway takes the plain Messages shape; Claude only features stay off
+                # the hub takes the plain Messages shape; Claude only features stay off
                 response = await self._get_client().messages.create(
-                    model=provider[3], max_tokens=MAX_TOKENS, system=persona, messages=turns)
+                    model=model, max_tokens=MAX_TOKENS, system=persona, messages=turns)
             else:
                 response = await self._get_client().beta.messages.create(
                     model=MODEL,
@@ -345,15 +360,21 @@ class Brain:
             self.log.warning("brain: rate limited")
             return None
         except anthropic.APIStatusError as e:
-            self.log.warning("brain: API error %s %s", e.status_code, e.message)
+            self.log.warning("brain: %s error %s %s", model, e.status_code, e.message)
             return None
         except anthropic.APIConnectionError:
             self.log.warning("brain: no connection to %s", provider[0])
+            return None
+        ran = getattr(response, "model", None) or model
+        if provider[0] == "farhelm" and not str(ran).endswith(model) and model not in str(ran):
+            # Farhelm serves an undeclared name with the client's default model: not the one asked for
+            self.log.info("brain: Farhelm has no %s yet (it would use %s)", model, ran)
+            self._missing[model] = time.time() + MISSING_RETRY_S
             return None
         cost = 0.0 if provider[0] == "farhelm" else self._record_cost(response.usage)
         if response.stop_reason == "refusal":
             self.log.info("brain: declined (%.4f USD)", cost)
             return None
         text = " ".join(b.text for b in response.content if b.type == "text").strip()
-        self.log.info("brain: %s in %d chars (%.4f USD)", what, len(text), cost)
+        self.log.info("brain: %s in %d chars by %s (%.4f USD)", what, len(text), ran, cost)
         return text or None

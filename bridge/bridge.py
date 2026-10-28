@@ -1252,8 +1252,8 @@ async def main():
         store.life = life
         store.brain = Brain(log)
         log.info("brain: %s", store.brain.status())
-        if store.brain.own():
-            store.brain.own().start_loading()                  # ready by the first message; Farhelm until then
+        if store.brain.own() and store.brain.provider() is None:
+            store.brain.own().start_loading()                  # no Farhelm set up: the own copy is the brain
 
         async def hook(msg):
             try:
