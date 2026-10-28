@@ -39,9 +39,7 @@ struct RoomCreatureApp: App {
                     model.isActive = new == .active
                     if new != .active {
                         model.voice.stop()
-                        #if os(iOS)
                         model.companion.stop()                // hands-free only while on screen
-                        #endif
                     }
                     if new == .background { model.backgroundedAt = .now }
                     if new == .active && old != .active { model.resume() }

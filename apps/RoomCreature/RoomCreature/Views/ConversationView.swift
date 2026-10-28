@@ -34,15 +34,11 @@ struct ConversationView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            #if os(iOS)
             if model.companion.isOn && model.companion.unitID == unitID {
                 CompanionBar(name: name)
             } else {
                 ChatComposer(unitID: unitID, name: name)
             }
-            #else
-            ChatComposer(unitID: unitID, name: name)
-            #endif
         }
         .screenBackground()
         .navigationTitle(name)
@@ -356,7 +352,7 @@ struct ChatComposer: View {
 
     var body: some View {
         HStack(spacing: Theme.Spacing.s) {
-            #if os(iOS)
+            if model.talk.input == .voice {
             Button {
                 Haptics.light()
                 model.companion.start(unit: unitID)
@@ -369,7 +365,7 @@ struct ChatComposer: View {
             .disabled(!model.isHubConnected)
             .accessibilityLabel("Talk with \(name), hands-free")
             .padding(.leading, -Theme.Spacing.s)
-            #endif
+            }
             TextField(model.isHubConnected ? "Message \(name)" : "Not connected to the hub", text: $text)
                 .textFieldStyle(.plain)
                 .font(Theme.Text.body)
@@ -378,15 +374,11 @@ struct ChatComposer: View {
                 .onSubmit(send)
                 .disabled(!model.isHubConnected)
                 .padding(.vertical, Theme.Spacing.s)
-            #if os(iOS)
-            if text.isEmpty && model.isHubConnected {
+            if model.talk.input == .voice && text.isEmpty && model.isHubConnected {
                 TalkButton(unitID: unitID, name: name, text: $text)
             } else {
                 sendButton
             }
-            #else
-            sendButton
-            #endif
         }
         .padding(.leading, Theme.Spacing.l)
         .padding(.trailing, Theme.Spacing.xs)
@@ -423,7 +415,6 @@ struct ChatComposer: View {
     }
 }
 
-#if os(iOS)
 /// The bar under the conversation while the voice companion is on: what is happening, what is heard, stop.
 private struct CompanionBar: View {
     @Environment(AppModel.self) private var model
@@ -549,7 +540,6 @@ private struct TalkButton: View {
         }
     }
 }
-#endif
 
 // MARK: - Time formatting
 
@@ -574,5 +564,24 @@ enum MessageTime {
             return date.formatted(.dateTime.weekday(.wide))
         }
         return date.formatted(.dateTime.day().month(.abbreviated))
+    }
+}
+
+/// The two choices: how the creature replies, and how the owner talks. Both start as text.
+struct TalkModePickers: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        @Bindable var talk = model.talk
+        Picker(selection: $talk.reply) {
+            ForEach(TalkMode.allCases) { Label($0.title, systemImage: $0.symbol).tag($0) }
+        } label: {
+            Label("Replies", systemImage: "bubble.left")
+        }
+        Picker(selection: $talk.input) {
+            ForEach(TalkMode.allCases) { Label($0.title, systemImage: $0.symbol).tag($0) }
+        } label: {
+            Label("I talk with", systemImage: "person.wave.2")
+        }
     }
 }

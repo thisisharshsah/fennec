@@ -1,4 +1,3 @@
-#if os(iOS)
 import Foundation
 import Observation
 
@@ -43,13 +42,18 @@ final class Companion {
     }
 
     /// The creature said something while the companion is on. Thoughts wait if the owner is mid-sentence.
+    /// With replies set to text nothing is spoken: an answer shows in the conversation and it listens again.
     func creatureSays(_ text: String, isThought: Bool) {
         guard let model, isOn else { return }
+        guard model.talk.reply == .voice else {
+            if !isThought && phase == .waiting { listen() }
+            return
+        }
         if isThought && (phase != .listening || !model.listener.transcript.isEmpty) { return }
         loop?.cancel()
         model.listener.cancel()
         phase = .speaking
-        model.voice.say(text, always: true) { [weak self] in
+        model.voice.say(text) { [weak self] in
             guard let self, self.phase == .speaking else { return }
             self.listen()
         }
@@ -96,4 +100,3 @@ final class Companion {
         }
     }
 }
-#endif

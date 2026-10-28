@@ -1,9 +1,8 @@
-#if os(iOS)
 @preconcurrency import AVFoundation
 import Observation
 @preconcurrency import Speech
 
-/// Hold to talk: the iPhone's microphone, turned into text on the phone itself where it can,
+/// Hold to talk: the device's microphone, turned into text on the device itself where it can,
 /// for the owner to talk to a creature instead of typing.
 @MainActor @Observable
 final class SpeechListener {
@@ -23,7 +22,7 @@ final class SpeechListener {
         transcript = ""
         finished = false
         guard await Self.permitted() else {
-            problem = "Allow the microphone and Speech Recognition for Fennec in Settings."
+            problem = "Allow the microphone and Speech Recognition for Fennec in Settings (on a Mac: System Settings, Privacy & Security)."
             return
         }
         guard let recognizer = SFSpeechRecognizer(), recognizer.isAvailable else {
@@ -31,9 +30,11 @@ final class SpeechListener {
             return
         }
         do {
+            #if os(iOS)
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers, .defaultToSpeaker])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
+            #endif
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.shouldReportPartialResults = true
             if recognizer.supportsOnDeviceRecognition { request.requiresOnDeviceRecognition = true }
@@ -82,7 +83,9 @@ final class SpeechListener {
         task = nil
         request = nil
         isListening = false
+        #if os(iOS)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        #endif
     }
 
     // The audio, recognition and permission callbacks arrive on background threads. Closures written
@@ -116,4 +119,3 @@ final class SpeechListener {
         return await AVAudioApplication.requestRecordPermission()
     }
 }
-#endif

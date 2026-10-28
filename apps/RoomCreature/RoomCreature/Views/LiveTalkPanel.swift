@@ -49,9 +49,7 @@ struct LiveTalkPanel: View {
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.l, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.l, style: .continuous).strokeBorder(Theme.hairline, lineWidth: 1))
         .onDisappear {
-            #if os(iOS)
             if model.companion.unitID == unitID { model.companion.stop() }
-            #endif
         }
     }
 
@@ -67,6 +65,22 @@ struct LiveTalkPanel: View {
             if let brain = model.store.brain, !(brain.hasKey ?? false) {      // known to be off, not just unknown
                 SecondaryText("can't answer yet")
             }
+            Menu {
+                TalkModePickers()
+            } label: {
+                HStack(spacing: 2) {
+                    Image(systemName: model.talk.input.symbol)
+                    Image(systemName: model.talk.reply == .voice ? "speaker.wave.2.fill" : "text.bubble")
+                }
+                .font(Theme.Text.caption)
+                .foregroundStyle(Theme.textSecondary)
+                .padding(.horizontal, Theme.Spacing.s)
+                .padding(.vertical, Theme.Spacing.xs)
+                .background(Theme.surfaceElevated, in: Capsule())
+            }
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("Text or voice")
         }
     }
 
@@ -88,7 +102,6 @@ struct LiveTalkPanel: View {
     }
 
     private func status(at now: Date) -> (text: String, symbol: String, tint: Color)? {
-        #if os(iOS)
         if model.companion.isOn && model.companion.unitID == unitID {
             switch model.companion.phase {
             case .listening:
@@ -99,7 +112,6 @@ struct LiveTalkPanel: View {
             case .off: break
             }
         }
-        #endif
         let said = recent.last { !$0.isThought }
         if let said, !said.isFromCreature, model.store.brain?.hasKey ?? true,
            now.timeIntervalSince(said.time) < Self.replyWaitS {
@@ -110,9 +122,17 @@ struct LiveTalkPanel: View {
 
     private var controls: some View {
         HStack(spacing: Theme.Spacing.s) {
-            #if os(iOS)
-            voiceButton
-            #endif
+            if model.talk.input == .voice {
+                voiceButton
+            } else {
+                textControls
+            }
+        }
+        .disabled(!model.isHubConnected)
+    }
+
+    private var textControls: some View {
+        HStack(spacing: Theme.Spacing.s) {
             TextField("Message", text: $text)
                 .textFieldStyle(.plain)
                 .font(Theme.Text.callout)
@@ -134,10 +154,8 @@ struct LiveTalkPanel: View {
                 .accessibilityLabel("Send")
             }
         }
-        .disabled(!model.isHubConnected)
     }
 
-    #if os(iOS)
     /// Starts or stops the hands-free conversation.
     private var voiceButton: some View {
         let on = model.companion.isOn && model.companion.unitID == unitID
@@ -145,17 +163,16 @@ struct LiveTalkPanel: View {
             Haptics.light()
             if on { model.companion.stop() } else { isTyping = false; model.companion.start(unit: unitID) }
         } label: {
-            Image(systemName: on ? "stop.fill" : "waveform")
-                .font(.system(size: 15, weight: .bold))
+            Label(on ? "Stop" : "Talk", systemImage: on ? "stop.fill" : "waveform")
+                .font(Theme.Text.chip.weight(.semibold))
                 .foregroundStyle(Theme.onAccent)
-                .frame(width: 36, height: 36)
-                .background(on ? Theme.negative : Theme.MoodColor.color(for: .curious), in: Circle())
+                .frame(maxWidth: .infinity, minHeight: 36)
+                .background(on ? Theme.negative : Theme.MoodColor.color(for: .curious), in: Capsule())
                 .symbolEffect(.variableColor.iterative, isActive: on && model.companion.phase == .listening)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(on ? "Stop talking with \(name)" : "Talk with \(name) by voice")
     }
-    #endif
 
     private func send() {
         let said = text.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -9,14 +9,14 @@ final class AppModel {
     let navigator = Navigator()
     let client: BridgeClient
     let notifier: CreatureNotifier
-    /// Reads a creature's new messages aloud on the iPhone (silent on the Mac).
+    /// Reads a creature's new messages aloud, when replies are set to voice.
     let voice = CreatureVoice()
-    #if os(iOS)
-    /// Hold to talk in Chat.
+    /// Text or voice, each way.
+    let talk = TalkPrefs()
+    /// Listening, when the owner talks by voice.
     let listener = SpeechListener()
     /// Hands-free conversation with one creature.
     let companion = Companion()
-    #endif
     /// The app is on screen; a creature only speaks then.
     @ObservationIgnored var isActive = true
 
@@ -27,14 +27,12 @@ final class AppModel {
             guard let self else { return }
             self.notifier.handle(event, creatureName: self.store.registry.name(for: event.unit))
             guard self.isActive, let text = event.text, !text.isEmpty else { return }
-            #if os(iOS)
             let thought = event.name == "thought"
             if self.companion.isOn, event.isNotice || thought,
                self.store.registry.currentID(for: event.unit) == self.companion.unitID {
                 self.companion.creatureSays(text, isThought: thought)
                 return
             }
-            #endif
             if event.isNotice, !self.isListening {
                 self.voice.say(text)
             }
@@ -42,9 +40,7 @@ final class AppModel {
         store.messages.onUnreadChange = { [weak self] count in
             self?.notifier.setBadge(count)
         }
-        #if os(iOS)
         companion.attach(self)
-        #endif
         notifier.onOpenConversation = { [weak self] unit in
             guard let self else { return }
             self.store.messages.markRead(unit)
@@ -113,11 +109,7 @@ final class AppModel {
 
     /// The owner is talking: the creature does not speak over them.
     var isListening: Bool {
-        #if os(iOS)
         listener.isListening
-        #else
-        false
-        #endif
     }
 
     /// When the app went to the background, for `resume`.
