@@ -4,6 +4,7 @@ by small open models through MLX and by today's brain (gpt-oss-20b on the Consci
 scored by automatic checks and by a judge model.
 
     tools/bench/.venv/bin/python tools/bench/bench.py run mlx-community/Qwen3.5-2B-4bit
+    tools/bench/.venv/bin/python tools/bench/bench.py run <model> <adapter dir>     a fine tuned one (train.py)
     tools/bench/.venv/bin/python tools/bench/bench.py teacher          today's brain through the gateway
     tools/bench/.venv/bin/python tools/bench/bench.py judge            scores every answer file not yet judged
     tools/bench/.venv/bin/python tools/bench/bench.py report           the table
@@ -51,13 +52,13 @@ def slug(model):
 
 # answering
 
-def run(model_id):
+def run(model_id, adapter=None):
     from mlx_lm import load, stream_generate
     from mlx_lm.sample_utils import make_sampler
     import mlx.core as mx
     cases, _ = load_cases()
     started = time.time()
-    model, tokenizer = load(model_id)
+    model, tokenizer = load(model_id, adapter_path=adapter) if adapter else load(model_id)
     load_s = time.time() - started
     sampler = make_sampler(temp=0.7, top_p=0.9)
     out = []
@@ -76,7 +77,8 @@ def run(model_id):
                     "tps": round(last.generation_tps, 1) if last else 0.0})
         print(f"{case['id']:12} {out[-1]['tps']:6.1f} t/s  {out[-1]['text'][:90]}", flush=True)
     peak = mx.get_peak_memory() / 1e9 if hasattr(mx, "get_peak_memory") else None
-    save(model_id, out, {"load_s": round(load_s, 1), "peak_gb": round(peak, 2) if peak else None})
+    save(model_id + (" + Crawl tuning" if adapter else ""), out,
+         {"load_s": round(load_s, 1), "peak_gb": round(peak, 2) if peak else None})
 
 
 def gateway():
@@ -120,7 +122,9 @@ def checks(case, text, invented_words):
     words = len(text.split())
     said = text.lower()
     allowed = (case["room"] + " " + case.get("message", "")).lower()
-    invented = [w for w in invented_words if re.search(r"\b" + re.escape(w), said) and w not in allowed]
+    # whole words both ways: "hum" is not in "humidity", and the room only allows what it really says
+    invented = [w for w in invented_words
+                if re.search(r"\b" + re.escape(w), said) and not re.search(r"\b" + re.escape(w) + r"\b", allowed)]
     result = {
         "answered": bool(text) and "<think" not in said,
         "grounded": not invented,
@@ -219,4 +223,4 @@ def report():
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "report"
-    {"run": lambda: run(sys.argv[2]), "teacher": teacher, "judge": judge, "report": report}[cmd]()
+    {"run": lambda: run(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None), "teacher": teacher, "judge": judge, "report": report}[cmd]()
