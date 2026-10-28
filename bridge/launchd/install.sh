@@ -2,7 +2,8 @@
 # Install (or remove) login services for the bridge and the voice,
 # so the Mac starts them itself and restarts them if they exit.
 #
-#   bridge/launchd/install.sh            install and start
+#   bridge/launchd/install.sh            install and start both
+#   bridge/launchd/install.sh bridge     only the bridge (no voice, nothing on the speaker)
 #   bridge/launchd/install.sh remove     stop and remove
 #
 # Logs: data/bridge.log and data/voice.log.
@@ -45,11 +46,19 @@ if [ "$1" = "remove" ]; then
 fi
 
 write_plist com.harshsah.roomcreature.bridge bridge.py bridge.log
-write_plist com.harshsah.roomcreature.voice voice.py voice.log
-pkill -f "$ROOT/bridge/bridge.py" 2>/dev/null || true
-pkill -f "$ROOT/bridge/voice.py" 2>/dev/null || true
+pkill -f "bridge/bridge.py" 2>/dev/null || true
+if [ "$1" = "bridge" ]; then
+  rm -f "$AGENTS/com.harshsah.roomcreature.voice.plist"
+else
+  write_plist com.harshsah.roomcreature.voice voice.py voice.log
+  pkill -f "$ROOT/bridge/voice.py" 2>/dev/null || true
+fi
 sleep 1
 launchctl bootstrap "gui/$UID_" "$AGENTS/com.harshsah.roomcreature.bridge.plist"
-launchctl bootstrap "gui/$UID_" "$AGENTS/com.harshsah.roomcreature.voice.plist"
-echo "installed: bridge and voice start at login and restart if they exit"
+if [ "$1" = "bridge" ]; then
+  echo "installed: the bridge starts at login and restarts if it exits"
+else
+  launchctl bootstrap "gui/$UID_" "$AGENTS/com.harshsah.roomcreature.voice.plist"
+  echo "installed: bridge and voice start at login and restart if they exit"
+fi
 echo "status:    launchctl print gui/$UID_/com.harshsah.roomcreature.bridge | head -5"
