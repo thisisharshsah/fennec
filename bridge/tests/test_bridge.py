@@ -268,3 +268,30 @@ def test_pictures_go_only_to_apps_watching():
     asyncio.run(B.send_picture(store, {"unit": "eye", "jpeg": "AAAA"}))
     assert watcher.sent[0]["type"] == "picture" and watcher.sent[0]["jpeg"] == "AAAA"
     assert other.sent == []
+
+
+def test_a_thumbs_up_answers_a_recent_notice():
+    store = B.Store()
+    store.record = lambda msg: store.events.append(msg) if msg.get("type") == "event" else None
+    asyncio.run(B.sign_answer(store, {"unit": "crawl", "name": "thumbs_up"}))
+    assert not any(e.get("name") == "speech" for e in store.events)     # nothing to answer
+    store.events.append({"type": "event", "unit": "crawl", "name": "notice", "kind": "break", "ts": time.time() - 60})
+    asyncio.run(B.sign_answer(store, {"unit": "crawl", "name": "thumbs_up"}))
+    answer = [e for e in store.events if e.get("name") == "speech"][-1]
+    assert answer["text"] == "👍 Yes" and answer["via"] == "gesture" and answer["link"] == "hub"
+
+
+def test_a_nod_answers_yes():
+    store = B.Store()
+    store.record = lambda msg: store.events.append(msg) if msg.get("type") == "event" else None
+    store.events.append({"type": "event", "unit": "crawl", "name": "notice", "kind": "break", "ts": time.time() - 30})
+    asyncio.run(B.sign_answer(store, {"unit": "crawl", "name": "shook_head"}))
+    assert [e for e in store.events if e.get("name") == "speech"][-1]["text"] == "No (shook head)"
+
+
+def test_a_nod_without_a_question_is_ignored():
+    store = B.Store()
+    store.units["crawl"] = {"unit": "crawl", "connected": True, "hello": {"sensors": ["lsm6dsl"]}}
+    assert B.eye_as_creature_event(store, {"type": "event", "unit": "eye", "name": "nodded"}) is None
+    store.events.append({"type": "event", "unit": "crawl", "name": "notice", "kind": "break", "ts": time.time() - 30})
+    assert B.eye_as_creature_event(store, {"type": "event", "unit": "eye", "name": "nodded"})["name"] == "nodded"

@@ -206,6 +206,20 @@ the HTTP ingest as unit `eye`. Its events become events of the creature
 2 minutes), and the hub turns the head toward the person
 (`look_at` from the lens's field of view, `hfov` in the eye's hello).
 
+More events of the creature from the eye: hand signs `waved`, `thumbs_up`,
+`open_palm` (snoozes notices for 30 minutes); head answers `nodded`,
+`shook_head` (only when a notice is under 10 minutes old); posture
+`slouching`, `sat_up`, `stretched` (restarts the break timer); tiredness
+`yawned`, `eyes_heavy`. A thumbs-up, open palm, nod or shake soon after a
+notice is also kept as the owner's answer (a `speech` event, `"via":"gesture"`).
+New notice kinds: `posture`, `tired`.
+
+When the eye runs: `{"cmd":"eye","mode":"off|auto|on"}`. The hub starts and
+stops the eye program itself (auto: while the creature's own distance sensor
+feels someone, and two minutes after), keeps the mode in data/eye.json, puts
+`"eye":{"mode","running","camera","here"}` in its hello, and tells apps of
+changes with `{"type":"eye","mode":"auto","running":false,...}`.
+
 Five times a second the eye sends an outline, forwarded to apps with `for`
 set to the creature and never logged:
 

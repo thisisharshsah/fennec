@@ -16,6 +16,8 @@ import datetime as dt
 import json
 import logging
 import math
+import os
+import signal
 import pathlib
 import socket
 import sys
@@ -27,6 +29,7 @@ import websockets
 
 from life import Life
 from brain import Brain
+from eye_control import EyeControl
 import security
 from zeroconf import ServiceInfo
 from zeroconf.asyncio import AsyncZeroconf
@@ -103,8 +106,12 @@ class Store:
             d["sensors"] = (u.get("hello") or {}).get("sensors")
             units.append(d)
         life = getattr(self, "life", None)
-        return {"type": "hello", "bridge": BRIDGE_VERSION, "lan_ip": self.lan_ip, "unit_port": UNIT_PORT, "units": units,
-                "life": bool(life and life.enabled)}
+        eye = getattr(self, "eye", None)
+        hello = {"type": "hello", "bridge": BRIDGE_VERSION, "lan_ip": self.lan_ip, "unit_port": UNIT_PORT, "units": units,
+                 "life": bool(life and life.enabled)}
+        if eye is not None:
+            hello["eye"] = {k: v for k, v in eye.status().items() if k != "type"}
+        return hello
 
     def history_message(self):
         return {"type": "history", "events": list(self.events)[-HISTORY:]}
@@ -749,6 +756,12 @@ async def ws_handler(ws, store, serial_link):
                 if brain is not None and ("on" in msg or cap is not None):
                     brain.configure(enabled=msg.get("on"), daily_cap_usd=cap)
                 await ws.send(json.dumps(dict({"type": "brain"}, **(brain.status() if brain else {}))))
+            elif msg.get("cmd") == "eye":                    # when the camera eye runs: off, auto or on
+                eye = getattr(store, "eye", None)
+                if eye is not None:
+                    if msg.get("mode"):
+                        await eye.set_mode(str(msg["mode"]))
+                    await announce_eye(store, force=True)
             elif msg.get("cmd") == "picture":                # this app wants the eye's live picture, or no longer
                 if msg.get("on"):
                     store.picture_clients.add(ws)
@@ -851,7 +864,8 @@ def push_notice(unit, kind, text):
     import urllib.request
     url = cfg.get("ntfy_server", "https://ntfy.sh").rstrip("/") + "/" + cfg["ntfy_topic"]
     title = {"say": f"{unit.capitalize()} says", "greet": "Welcome back", "morning": "Good morning",
-             "break": "Break time", "warm": "Warm room", "goodnight": "Goodnight"}.get(kind, unit.capitalize())
+             "break": "Break time", "warm": "Warm room", "goodnight": "Goodnight",
+             "posture": "Posture", "tired": "Tired?"}.get(kind, unit.capitalize())
     req = urllib.request.Request(url, data=text.encode(), method="POST",
                                  headers={"Title": title.encode().decode("latin1", "ignore"), "Tags": "fox_face"})
     try:
@@ -946,7 +960,33 @@ async def eye_follow(store, msg):
 
 
 EYE_EVENTS = {"person_appeared": "someone_in_front", "person_left": "someone_left",
-              "looked_at": "looked_at", "looked_away": "looked_away"}
+              "looked_at": "looked_at", "looked_away": "looked_away",
+              "waved": "waved", "thumbs_up": "thumbs_up", "open_palm": "open_palm",
+              "nodded": "nodded", "shook_head": "shook_head", "stretched": "stretched",
+              "slouching": "slouching", "sat_up": "sat_up", "yawned": "yawned", "eyes_heavy": "eyes_heavy"}
+SIGN_ANSWERS = {"thumbs_up": "👍 Yes", "open_palm": "✋ Not now", "nodded": "Yes (nodded)", "shook_head": "No (shook head)"}
+SIGN_ANSWER_WINDOW_S = 10 * 60          # a sign answers a notice this recent
+
+
+async def sign_answer(store, msg):
+    """A thumbs-up, open palm, nod or shake soon after a notice is the owner's answer to it, kept in the conversation."""
+    text = SIGN_ANSWERS.get(msg.get("name"))
+    if not text:
+        return
+    now = time.time()
+    unit = msg["unit"]
+    if recent_notice(store, unit, now):
+        await store.broadcast({"type": "event", "unit": unit, "link": "hub", "name": "speech",
+                               "text": text, "via": "gesture", "t": 0, "ts": now})
+
+
+ANSWER_ONLY = ("nodded", "shook_head")    # a head movement only means yes or no when there is a question
+
+
+def recent_notice(store, unit, now=None):
+    now = now or time.time()
+    return any(e.get("unit") == unit and e.get("name") == "notice" and now - e.get("ts", 0) < SIGN_ANSWER_WINDOW_S
+               for e in store.events)
 
 
 def eye_as_creature_event(store, msg):
@@ -955,6 +995,8 @@ def eye_as_creature_event(store, msg):
         return None
     unit = body_unit(store)
     if not unit:
+        return None
+    if msg["name"] in ANSWER_ONLY and not recent_notice(store, unit):
         return None
     return {"type": "event", "unit": unit, "name": EYE_EVENTS[msg["name"]], "via": "eye",
             "t": msg.get("t", 0), "ts": msg.get("ts", time.time())}
@@ -974,6 +1016,30 @@ async def life_loop(store, life):
             await run_life(store, life, *life.tick())
         except Exception as e:  # never let a rule take the hub down
             log.warning("life tick failed: %s", e)
+
+
+async def announce_eye(store, force=False):
+    """Tell the apps the eye's mode and whether the camera is in use, when that changed."""
+    status = store.eye.status()
+    if force or status != getattr(store, "_eye_sent", None):
+        store._eye_sent = status
+        text = json.dumps(dict(status, ts=time.time()))   # a hub setting, not a unit's message: not logged
+        for ws in list(store.clients):
+            try:
+                await ws.send(text)
+            except Exception:
+                store.clients.discard(ws)
+
+
+async def eye_loop(store):
+    """Auto mode's grace after leaving, and an eye that quit on its own, are noticed here."""
+    while True:
+        await asyncio.sleep(10)
+        try:
+            await store.eye.apply()
+            await announce_eye(store)
+        except Exception as e:  # noqa: BLE001
+            log.warning("eye control failed: %s", e)
 
 
 def load_life_enabled():
@@ -1043,16 +1109,30 @@ async def main():
 
         async def hook(msg):
             try:
+                if store.eye.observe(msg, body_unit(store)):
+                    await store.eye.apply()
+                    await announce_eye(store)
                 if "vision-person" in ((store.units.get(msg.get("unit")) or {}).get("hello") or {}).get("sensors", []):
                     await eye_follow(store, msg)
                     seen = eye_as_creature_event(store, msg)
                     if seen:
                         await store.broadcast(seen)            # comes back through this hook as the creature's
+                        await sign_answer(store, seen)
                     return                                     # the eye has no body: the rules act on the creature
                 await run_life(store, life, *life.observe(msg))
             except Exception as e:
                 log.warning("life rule failed: %s", e)
         store.life_hook = hook
+        store.eye = EyeControl(log)
+        store.eye.release_leftovers()
+        await store.eye.apply()
+        async def release_and_exit():
+            await store.eye.stop()                         # stopped by kill: release the camera first
+            os._exit(0)
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            asyncio.get_running_loop().add_signal_handler(sig, lambda: asyncio.ensure_future(release_and_exit()))
+        log.info("eye %s", store.eye.mode)
+        eyer = asyncio.create_task(eye_loop(store))
         lifer = asyncio.create_task(life_loop(store, life))
         log.info("daily life %s", "on" if life.enabled else "off")
         try:
@@ -1060,6 +1140,8 @@ async def main():
         finally:
             keeper.cancel()
             lifer.cancel()
+            eyer.cancel()
+            await store.eye.stop()                         # the camera is released with the hub
             await zc.async_unregister_all_services()
             await zc.async_close()
 

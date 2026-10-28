@@ -146,3 +146,80 @@ def test_a_look_earns_a_silent_perk_with_cooldown():
     assert life.observe(ev("looked_at")) == ([], [])
     clock.advance(61)
     assert life.observe(ev("looked_at"))[0]
+
+
+def test_wave_gets_a_wave_back_with_cooldown():
+    life, clock = make(dt.datetime(2026, 10, 27, 14, 0))
+    actions, _ = life.observe(ev("waved"))
+    assert ("crawl", {"cmd": "gesture", "name": "wag"}) in actions
+    clock.advance(10)
+    assert life.observe(ev("waved")) == ([], [])
+
+
+def test_open_palm_snoozes_notices_for_half_an_hour():
+    life, clock = make(dt.datetime(2026, 10, 27, 14, 0))
+    life.observe(ev("someone_in_front"))
+    clock.advance(40 * 60)
+    life.observe(ev("open_palm"))
+    clock.advance(11 * 60)                                # a break would be due, but the creature was told not now
+    assert life.tick() == ([], [])
+    clock.advance(30 * 60)
+    assert kinds(life.tick()[1]) == ["break"]             # and it comes once the snooze is over
+    life2, clock2 = make(dt.datetime(2026, 10, 27, 14, 0))
+    life2.observe(ev("open_palm"))
+    clock2.advance(31 * 60)
+    _, notices = life2.observe(state(temp_c=30.0))        # snooze over: the warm rule speaks again
+    assert kinds(notices) == ["warm"]
+
+
+def test_ten_minutes_hunched_earns_one_posture_nudge():
+    life, clock = make(dt.datetime(2026, 10, 27, 14, 0))
+    life.observe(ev("someone_in_front"))
+    life.observe(ev("slouching"))
+    clock.advance(8 * 60)
+    assert life.tick()[1] == []
+    clock.advance(60)
+    assert kinds(life.tick()[1]) == ["posture"]
+    clock.advance(60)
+    assert life.tick()[1] == []                            # once, not every tick
+
+
+def test_sitting_up_cancels_the_nudge():
+    life, clock = make(dt.datetime(2026, 10, 27, 14, 0))
+    life.observe(ev("someone_in_front"))
+    life.observe(ev("slouching"))
+    clock.advance(5 * 60)
+    life.observe(ev("sat_up"))
+    clock.advance(10 * 60)
+    assert life.tick()[1] == []
+
+
+def test_a_stretch_restarts_the_break_timer():
+    life, clock = make(dt.datetime(2026, 10, 27, 14, 0))
+    life.observe(ev("someone_in_front"))
+    clock.advance(45 * 60)
+    life.observe(ev("stretched"))
+    clock.advance(10 * 60)                                 # 55 min at the desk, but a stretch 10 min ago
+    assert life.tick()[1] == []
+    clock.advance(41 * 60)
+    assert kinds(life.tick()[1]) == ["break"]
+
+
+def test_three_tired_signs_in_the_evening_suggest_calling_it_a_day():
+    life, clock = make(dt.datetime(2026, 10, 27, 21, 0))
+    assert life.observe(ev("yawned"))[1] == []
+    clock.advance(120)
+    assert life.observe(ev("eyes_heavy"))[1] == []
+    clock.advance(120)
+    _, notices = life.observe(ev("yawned"))
+    assert notices == [("crawl", "tired", "You look tired. Maybe call it a day?")]
+    clock.advance(60)
+    for name in ("yawned", "yawned", "yawned"):
+        assert life.observe(ev(name))[1] == []             # at most every two hours
+
+
+def test_tired_signs_spread_out_do_not_count():
+    life, clock = make(dt.datetime(2026, 10, 27, 15, 0))
+    for _ in range(3):
+        assert life.observe(ev("yawned"))[1] == []
+        clock.advance(10 * 60)

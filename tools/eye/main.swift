@@ -35,6 +35,288 @@ func post(_ path: String, _ body: [String: Any], reply: (@Sendable ([String: Any
     }.resume()
 }
 
+/// Hand signals from Vision's hand joints: a thumbs-up, an open palm held still, or a wave
+/// (an open palm moving side to side). Coordinates are in picture heights, so distances compare.
+struct HandReader {
+    enum Sign: String {
+        case thumbsUp = "thumbs_up", palm = "open_palm", wave = "waved"
+        var label: String {
+            switch self {
+            case .thumbsUp: "thumbs-up"
+            case .palm: "open palm (not now)"
+            case .wave: "wave"
+            }
+        }
+    }
+
+    struct Shape {
+        let sign: Sign?
+        let wrist: CGPoint
+        let box: CGRect          // 0..1 of the picture, origin bottom left, for drawing
+    }
+
+    private var palmXs: [(t: Date, x: Double)] = []
+    private var held: Sign?
+    private var heldSince = Date.distantFuture
+    private var lastSent: [Sign: Date] = [:]
+
+    /// The shape one hand makes in this frame.
+    static func shape(_ hand: VNHumanHandPoseObservation, aspect: Double) -> Shape? {
+        guard let points = try? hand.recognizedPoints(.all) else { return nil }
+        let sure = points.values.filter { $0.confidence > 0.3 }.map(\.location)
+        guard sure.count >= 8, let minX = sure.map(\.x).min(), let maxX = sure.map(\.x).max(),
+              let minY = sure.map(\.y).min(), let maxY = sure.map(\.y).max() else { return nil }
+        let box = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+        func at(_ joint: VNHumanHandPoseObservation.JointName) -> CGPoint? {
+            guard let p = points[joint], p.confidence > 0.3 else { return nil }
+            return CGPoint(x: p.location.x * aspect, y: p.location.y)
+        }
+        guard let wrist = at(.wrist) else { return nil }
+        func reach(_ p: CGPoint) -> Double { hypot(p.x - wrist.x, p.y - wrist.y) }
+        func extended(_ tip: VNHumanHandPoseObservation.JointName, _ pip: VNHumanHandPoseObservation.JointName) -> Bool? {
+            guard let t = at(tip), let p = at(pip) else { return nil }
+            return reach(t) > reach(p) * 1.2
+        }
+        let fingers = [extended(.indexTip, .indexPIP), extended(.middleTip, .middlePIP),
+                       extended(.ringTip, .ringPIP), extended(.littleTip, .littlePIP)]
+        guard fingers.allSatisfy({ $0 != nil }) else { return Shape(sign: nil, wrist: wrist, box: box) }
+        var sign: Sign?
+        if fingers.allSatisfy({ $0 == true }), let middle = at(.middleTip), middle.y > wrist.y + 0.05 {
+            sign = .palm                                              // all four fingers out, pointing up
+        } else if fingers.allSatisfy({ $0 == false }), let thumb = at(.thumbTip), let ip = at(.thumbIP),
+                  let knuckle = at(.indexMCP), thumb.y > ip.y, thumb.y > knuckle.y + 0.04 {
+            sign = .thumbsUp                                          // a fist with the thumb above it
+        }
+        return Shape(sign: sign, wrist: wrist, box: box)
+    }
+
+    /// Feed every analysed frame. Returns a sign once when it is made, then not again for 4 s.
+    mutating func update(_ shapes: [Shape], now: Date) -> Sign? {
+        if let palm = shapes.first(where: { $0.sign == .palm }) { palmXs.append((now, palm.wrist.x)) }
+        palmXs.removeAll { now.timeIntervalSince($0.t) > 2.5 }
+        // a wave: the open hand turns back at least twice, across a tenth of the picture's height or more
+        let xs = palmXs.map(\.x)
+        var turns = 0, direction = 0.0
+        for (a, b) in zip(xs, xs.dropFirst()) where abs(b - a) > 0.012 {
+            let d: Double = b > a ? 1 : -1
+            if direction != 0 && d != direction { turns += 1 }
+            direction = d
+        }
+        if turns >= 2, let lo = xs.min(), let hi = xs.max(), hi - lo > 0.1 {
+            palmXs.removeAll()
+            held = nil
+            return send(.wave, now)
+        }
+        let current = shapes.compactMap(\.sign).first
+        if current != held {
+            held = current
+            heldSince = now
+            return nil
+        }
+        guard let sign = current, now.timeIntervalSince(heldSince) >= (sign == .palm ? 1.2 : 0.7) else { return nil }
+        if sign == .palm {                                            // held still, so not the start of a wave
+            let recent = palmXs.filter { now.timeIntervalSince($0.t) <= 1.2 }.map(\.x)
+            guard let lo = recent.min(), let hi = recent.max(), hi - lo < 0.05 else { return nil }
+        }
+        heldSince = .distantFuture                                    // once per hold
+        return send(sign, now)
+    }
+
+    private mutating func send(_ sign: Sign, _ now: Date) -> Sign? {
+        if let last = lastSent[sign], now.timeIntervalSince(last) < 4 { return nil }
+        lastSent[sign] = now
+        return sign
+    }
+}
+
+/// How many times a series turns back by at least `minLeg` (a zigzag filter, so jitter smaller than
+/// a leg never counts). A nod, down, up and down again, is 2.
+func reversals(_ values: [Double], minLeg: Double) -> Int {
+    guard var high = values.first else { return 0 }
+    var low = high
+    var direction = 0                     // 1 rising, -1 falling, 0 not yet moving
+    var count = 0
+    for v in values.dropFirst() {
+        switch direction {
+        case 0:
+            high = max(high, v)
+            low = min(low, v)
+            if high - low >= minLeg { direction = v == high ? 1 : -1 }
+        case 1:
+            if v > high { high = v } else if high - v >= minLeg { direction = -1; low = v; count += 1 }
+        default:
+            if v < low { low = v } else if v - low >= minLeg { direction = 1; high = v; count += 1 }
+        }
+    }
+    return count
+}
+
+/// Each value averaged with the one before: takes the frame to frame jitter out of Vision's angles.
+func smoothed(_ values: [Double]) -> [Double] {
+    zip(values, values.dropFirst()).map { ($0 + $1) / 2 }
+}
+
+/// The p-th fraction of a list (0.8: higher than 80 % of it).
+func percentile(_ values: [Double], _ p: Double) -> Double? {
+    guard !values.isEmpty else { return nil }
+    let sorted = values.sorted()
+    return sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * p))]
+}
+
+/// Head gestures from the face's angles, 10 times a second: a nod says yes, a shake says no.
+struct HeadReader {
+    enum Sign: String { case nod = "nodded", shake = "shook_head" }
+    private var pitches: [(t: Date, v: Double)] = []
+    private var yaws: [(t: Date, v: Double)] = []
+    private var lastSent = Date.distantPast
+
+    mutating func update(pitch: Double?, yaw: Double?, now: Date) -> Sign? {
+        if let pitch { pitches.append((now, pitch)) }
+        if let yaw { yaws.append((now, yaw)) }
+        pitches.removeAll { now.timeIntervalSince($0.t) > 1.6 }
+        yaws.removeAll { now.timeIntervalSince($0.t) > 1.6 }
+        guard now.timeIntervalSince(lastSent) > 3 else { return nil }
+        // down, up, down again (or left, right, left), each leg at least 9° for a nod, 13° for a shake
+        let nod = reversals(smoothed(pitches.map(\.v)), minLeg: 0.16) >= 2
+        let shake = reversals(smoothed(yaws.map(\.v)), minLeg: 0.22) >= 2
+        guard nod != shake else { return nil }                       // neither, or a wobble in both
+        lastSent = now
+        pitches.removeAll()
+        yaws.removeAll()
+        return nod ? .nod : .shake
+    }
+}
+
+/// Posture from the body skeleton, against the owner's own upright baseline learned as they sit.
+struct PostureReader {
+    enum State: String { case upright, slouching, close }
+    private var ratios: [Double] = []         // head height over shoulder width, once a second, last 20 min
+    private var widths: [Double] = []
+    private var lastSample = Date.distantPast
+    private var slouchSince: Date?
+    private var uprightSince: Date?
+    private var armsUpSince: Date?
+    private var lastStretch = Date.distantPast
+    private(set) var reported = false         // a slouch was announced and not yet ended
+    private(set) var state: State?
+
+    /// Returns the events to send: slouching (a minute of it), sat_up, stretched.
+    mutating func update(_ body: VNHumanBodyPoseObservation?, aspect: Double, now: Date) -> [String] {
+        guard let body, let points = try? body.recognizedPoints(.all) else { state = nil; return [] }
+        func at(_ joint: VNHumanBodyPoseObservation.JointName) -> CGPoint? {
+            guard let p = points[joint], p.confidence > 0.3 else { return nil }
+            return CGPoint(x: p.location.x * aspect, y: p.location.y)
+        }
+        guard let left = at(.leftShoulder), let right = at(.rightShoulder), let nose = at(.nose) else { state = nil; return [] }
+        let width = hypot(left.x - right.x, left.y - right.y)
+        guard width > 0.05 else { state = nil; return [] }
+        let ratio = (nose.y - (left.y + right.y) / 2) / width
+        var events: [String] = []
+
+        if now.timeIntervalSince(lastSample) >= 1 {
+            lastSample = now
+            ratios.append(ratio)
+            widths.append(width)
+            if ratios.count > 1200 { ratios.removeFirst(); widths.removeFirst() }
+        }
+        // both wrists above the head for a second: a stretch, which counts as a short break
+        if let lw = at(.leftWrist), let rw = at(.rightWrist), lw.y > nose.y, rw.y > nose.y {
+            if armsUpSince == nil { armsUpSince = now }
+            if let since = armsUpSince, now.timeIntervalSince(since) >= 1, now.timeIntervalSince(lastStretch) > 60 {
+                lastStretch = now
+                events.append("stretched")
+            }
+        } else {
+            armsUpSince = nil
+        }
+        guard ratios.count >= 30, let upright = percentile(ratios, 0.8), let usual = percentile(widths, 0.5) else {
+            state = .upright
+            return events
+        }
+        let slouched = ratio < upright * 0.72
+        state = slouched ? .slouching : (width > usual * 1.35 ? .close : .upright)
+        if slouched {
+            uprightSince = nil
+            if slouchSince == nil { slouchSince = now }
+            if !reported, let since = slouchSince, now.timeIntervalSince(since) >= 60 {
+                reported = true
+                events.append("slouching")
+            }
+        } else {
+            slouchSince = nil
+            if uprightSince == nil { uprightSince = now }
+            if reported, let since = uprightSince, now.timeIntervalSince(since) >= 10 {
+                reported = false
+                events.append("sat_up")
+            }
+        }
+        return events
+    }
+}
+
+/// Signs of tiredness from face landmarks: eyes closed for a while, and yawns.
+struct TiredReader {
+    private var openings: [Double] = []       // eye openness when looking ahead, last few minutes
+    private var closedSince: Date?
+    private var yawnSince: Date?
+    private var lastHeavy = Date.distantPast
+    private var lastYawn = Date.distantPast
+    private(set) var signs: [Date] = []       // tired signs in the last 15 min
+    private(set) var eyesClosed = false
+
+    var isTired: Bool { signs.count >= 2 }
+
+    static func openness(_ region: VNFaceLandmarkRegion2D?) -> Double? {
+        guard let points = region?.normalizedPoints, points.count >= 4 else { return nil }
+        let xs = points.map { Double($0.x) }, ys = points.map { Double($0.y) }
+        guard let w = xs.max().flatMap({ m in xs.min().map { m - $0 } }), w > 0,
+              let h = ys.max().flatMap({ m in ys.min().map { m - $0 } }) else { return nil }
+        return h / w
+    }
+
+    /// Returns the events to send: eyes_heavy, yawned.
+    /// `pitch` is the head's tilt: looking down at a keyboard lowers the eyelids, which is not tiredness.
+    mutating func update(_ face: VNFaceObservation?, pitch: Double?, now: Date) -> [String] {
+        signs.removeAll { now.timeIntervalSince($0) > 15 * 60 }
+        guard let face, let marks = face.landmarks, abs(face.yaw?.doubleValue ?? 1) < 0.35,
+              abs(pitch ?? 1) < 0.25 else {
+            closedSince = nil; yawnSince = nil; eyesClosed = false
+            return []
+        }
+        var events: [String] = []
+        let eyes = [Self.openness(marks.leftEye), Self.openness(marks.rightEye)].compactMap { $0 }
+        if eyes.count == 2 {
+            let eye = (eyes[0] + eyes[1]) / 2
+            openings.append(eye)
+            if openings.count > 900 { openings.removeFirst() }
+            if openings.count >= 50, let open = percentile(openings, 0.7) {
+                eyesClosed = eye < open * 0.45
+                if eyesClosed {
+                    if closedSince == nil { closedSince = now }
+                    if let since = closedSince, now.timeIntervalSince(since) >= 1.0, now.timeIntervalSince(lastHeavy) > 20 {
+                        lastHeavy = now                       // longer than a blink
+                        signs.append(now)
+                        events.append("eyes_heavy")
+                    }
+                } else {
+                    closedSince = nil
+                }
+            }
+        }
+        if let mouth = Self.openness(marks.innerLips), mouth > 0.55 {
+            if yawnSince == nil { yawnSince = now }
+            if let since = yawnSince, now.timeIntervalSince(since) >= 2.0, now.timeIntervalSince(lastYawn) > 15 {
+                lastYawn = now                                // held wide open: a yawn, not talking
+                signs.append(now)
+                events.append("yawned")
+            }
+        } else {
+            yawnSince = nil
+        }
+        return events
+    }
+}
+
 final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     let session = AVCaptureSession()
     let queue = DispatchQueue(label: "fennec.eye")
@@ -48,10 +330,17 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
     var facingFrames = 0, awayFrames = 0, lookingShown = false
     var arrivedAt: Date?
     var notes: [String] = []
+    var lastPrinted = ""
     var fov = 60.0
     /// The hub says an app is watching the live picture; only then are pictures encoded and sent.
     var wantPicture = false
     let jpegContext = CIContext()
+    var handReader = HandReader()
+    var headReader = HeadReader()
+    var postureReader = PostureReader()
+    var tiredReader = TiredReader()
+    var handBoxes: [CGRect] = []
+    var lastSign: (name: String, at: Date)?
 
     func start() throws {
         let types: [AVCaptureDevice.DeviceType] = [.external, .builtInWideAngleCamera]
@@ -70,20 +359,51 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
         output.setSampleBufferDelegate(self, queue: queue)
         session.addOutput(output)
         session.startRunning()
-        post("hello", ["unit": "eye", "fw": "eye 0.1 (Mac test rig)", "sensors": ["camera-on-mac", "vision-person", "vision-face"], "hfov": fov])
+        post("hello", ["unit": "eye", "fw": "eye 0.1 (Mac test rig)", "sensors": ["camera-on-mac", "vision-person", "vision-face", "vision-hand", "vision-pose"], "hfov": fov])
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sample: CMSampleBuffer, from connection: AVCaptureConnection) {
         let now = Date()
-        guard now.timeIntervalSince(lastFrame) >= 0.2, let pixels = CMSampleBufferGetImageBuffer(sample) else { return }  // 5 per second
+        // hands and face angles 10 times a second (a wave or a nod is quick); people, posture and
+        // face landmarks on every second frame, 5 a second
+        guard now.timeIntervalSince(lastFrame) >= 0.1, let pixels = CMSampleBufferGetImageBuffer(sample) else { return }
         lastFrame = now
-        if lastReport == .distantPast { describe(pixels) }
+        if frames == 0 { describe(pixels) }
         frames += 1
-        if snap && frames == 10 { save(pixels) }                    // two seconds in, after the camera settles
+        if snap && frames == 20 { save(pixels) }                    // two seconds in, after the camera settles
+        let full = frames % 2 == 0
+        let aspect = Double(CVPixelBufferGetWidth(pixels)) / Double(max(CVPixelBufferGetHeight(pixels), 1))
         let bodies = VNDetectHumanRectanglesRequest()
         bodies.upperBodyOnly = true            // a desk view shows the upper body only
         let faces = VNDetectFaceRectanglesRequest()
-        try? VNImageRequestHandler(cvPixelBuffer: pixels, options: [:]).perform([bodies, faces])
+        let hands = VNDetectHumanHandPoseRequest()
+        hands.maximumHandCount = 2
+        let pose = VNDetectHumanBodyPoseRequest()
+        let handler = VNImageRequestHandler(cvPixelBuffer: pixels, options: [:])
+        try? handler.perform(full ? [hands, faces, bodies, pose] : [hands, faces])
+        let handShapes = (hands.results ?? []).compactMap { HandReader.shape($0, aspect: aspect) }
+        handBoxes = handShapes.map(\.box)
+        if let sign = handReader.update(handShapes, now: now) { signal(sign.rawValue, sign.label, now) }
+        let faceList = faces.results ?? []
+        let nearestFace = faceList.max { $0.boundingBox.height < $1.boundingBox.height }
+        if let sign = headReader.update(pitch: nearestFace?.pitch?.doubleValue, yaw: nearestFace?.yaw?.doubleValue, now: now) {
+            signal(sign.rawValue, sign == .nod ? "nod (yes)" : "head shake (no)", now)
+        }
+        guard full else { return }
+        let skeleton = (pose.results ?? []).max { $0.confidence < $1.confidence }
+        for event in postureReader.update(skeleton, aspect: aspect, now: now) {
+            signal(event, ["slouching": "slouching", "sat_up": "sat up", "stretched": "stretch"][event] ?? event, now)
+        }
+        var landmarked: VNFaceObservation?
+        if let nearestFace {
+            let marks = VNDetectFaceLandmarksRequest()
+            marks.inputFaceObservations = [nearestFace]
+            try? handler.perform([marks])
+            landmarked = marks.results?.first
+        }
+        for event in tiredReader.update(landmarked, pitch: nearestFace?.pitch?.doubleValue, now: now) {
+            signal(event, event == "yawned" ? "yawn" : "heavy eyes", now)
+        }
         let found = bodies.results ?? []
         people = found.count
         if let nearest = found.max(by: { $0.boundingBox.height < $1.boundingBox.height }) {
@@ -91,7 +411,6 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
             x = seenFrames == 0 ? seen : x * 0.6 + seen * 0.4      // smoothed, so the head glides
             size = Double(nearest.boundingBox.height)              // 0..1, bigger is closer
         }
-        let faceList = faces.results ?? []
         facing = faceList.contains { abs($0.yaw?.doubleValue ?? 1) < 0.35 }
         report(now)
         looks(now)
@@ -100,7 +419,10 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
         var outline: [String: Any] = ["unit": "eye", "people": people, "looking": lookingShown, "present": present,
                                       "bodies": found.map { box($0.boundingBox) },
                                       "faces": faceList.map { box($0.boundingBox) + [abs($0.yaw?.doubleValue ?? 1) < 0.35 ? 1 : 0] },
-                                      "aspect": Double(CVPixelBufferGetWidth(pixels)) / Double(max(CVPixelBufferGetHeight(pixels), 1))]
+                                      "hands": handBoxes.map(box), "aspect": aspect]
+        if let shown = lastSign, now.timeIntervalSince(shown.at) < 2 { outline["sign"] = shown.name }
+        if present, let posture = postureReader.state { outline["posture"] = posture.rawValue }
+        if present { outline["tired"] = tiredReader.isTired }
         if present { outline["aim"] = (x * 100).rounded() / 100; outline["pan"] = pan(x) }
         if let since = arrivedAt { outline["since"] = since.timeIntervalSince1970 }
         post("vision", outline) { [weak self] answer in                // the apps draw this; the hub does not keep it
@@ -110,7 +432,7 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
         if wantPicture { sendPicture(pixels) }
         if watch {
             let size = CGSize(width: CVPixelBufferGetWidth(pixels), height: CVPixelBufferGetHeight(pixels))
-            let shapes = Shapes(size: size, bodies: found.map(\.boundingBox),
+            let shapes = Shapes(size: size, bodies: found.map(\.boundingBox), hands: handBoxes,
                                 faces: faceList.map { ($0.boundingBox, abs($0.yaw?.doubleValue ?? 1) < 0.35) },
                                 aim: present ? x : nil, lines: readout(now))
             DispatchQueue.main.async { viewer?.show(shapes) }
@@ -120,6 +442,13 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
     /// The head turn the hub makes for x (the hub's eye_pan, repeated here for the window).
     func pan(_ x: Double) -> Int {
         Int((atan(x * tan(fov * .pi / 360)) * 180 / .pi).rounded())
+    }
+
+    /// Something the eye read: noted in the window, shown on the card for 2 s, sent to the hub.
+    func signal(_ name: String, _ label: String, _ now: Date) {
+        lastSign = (name, now)
+        note(label, now)
+        post("event", ["unit": "eye", "name": name])
     }
 
     func note(_ text: String, _ now: Date) {
@@ -153,6 +482,8 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
             lines.append(lookingShown ? "looking at Crawl" : "not looking at Crawl")
             lines.append("Crawl's head turns \(side)")
             lines.append(String(format: "closeness %.2f (bigger is closer)", size))
+            if let posture = postureReader.state { lines.append("posture: \(posture.rawValue)") }
+            if tiredReader.isTired { lines.append("looks tired") }
             if let since = arrivedAt { lines.append("here for \(Int(now.timeIntervalSince(since)) / 60) min \(Int(now.timeIntervalSince(since)) % 60) s") }
         } else {
             lines.append("away")
@@ -218,7 +549,11 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
         var state: [String: Any] = ["unit": "eye", "people": people, "facing": facing]
         if people > 0 { state["x"] = (x * 100).rounded() / 100; state["size"] = (size * 100).rounded() / 100 }
         post("state", state)
-        print("eye: people \(people)  x \(String(format: "%+.2f", x))  facing \(facing)")
+        let line = "eye: people \(people)  facing \(facing)"     // the log gets changes, not a line a second
+        if line != lastPrinted {
+            lastPrinted = line
+            print("\(line)  x \(String(format: "%+.2f", x))")
+        }
     }
 }
 
@@ -226,6 +561,7 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
 struct Shapes {
     let size: CGSize
     let bodies: [CGRect]
+    let hands: [CGRect]
     let faces: [(CGRect, Bool)]
     let aim: Double?
     let lines: [String]
@@ -304,6 +640,7 @@ final class Viewer: NSObject, NSApplicationDelegate {
         marks.sublayers = nil
         let pic = pictureRect(shapes.size)
         for b in shapes.bodies { marks.addSublayer(box(place(b, in: pic), .systemGreen)) }       // a person
+        for h in shapes.hands { marks.addSublayer(box(place(h, in: pic), .systemPurple)) }        // a hand
         for (f, looking) in shapes.faces {                                                       // a face, yellow when looking
             marks.addSublayer(box(place(f, in: pic), looking ? .systemYellow : .systemGray, width: 2))
         }

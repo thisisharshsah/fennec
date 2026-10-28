@@ -26,6 +26,16 @@ QUIET_MARGIN_DB = 4.0            # quiet means within this of the quietest level
 MORNING_START_H, MORNING_END_H = 5, 12
 MORNING_GAP_S = 4 * 3600         # first presence after this long away in the morning
 LOOK_COOLDOWN_S = 2 * 60         # a perk when the owner looks at the creature, at most this often
+WAVE_COOLDOWN_S = 30
+SNOOZE_S = 30 * 60               # an open palm: no notices for this long
+HAND_SIGNS = ("waved", "thumbs_up", "open_palm", "nodded", "shook_head")   # answers: they act even while snoozed
+POSTURE_AFTER_S = 9 * 60         # after the eye's "slouching" (itself a minute in): about 10 min hunched
+POSTURE_COOLDOWN_S = 30 * 60
+STRETCH_COOLDOWN_S = 5 * 60
+TIRED_SIGNS = 3                  # yawns or heavy eyes within TIRED_WINDOW_S
+TIRED_WINDOW_S = 15 * 60
+TIRED_COOLDOWN_S = 2 * 3600
+EVENING_H = 19
 
 
 class UnitLife:
@@ -42,6 +52,12 @@ class UnitLife:
         self.goodnight_day = None        # the date of the evening we said goodnight
         self.morning_day = None
         self.last_look = 0.0
+        self.last_wave = 0.0
+        self.slouch_since = None
+        self.last_posture = 0.0
+        self.last_stretch = 0.0
+        self.tired_signs = collections.deque()
+        self.last_tired = 0.0
 
 
 class Life:
@@ -50,6 +66,7 @@ class Life:
         self.local = local or (lambda ts: dt.datetime.fromtimestamp(ts))
         self.units = {}
         self.enabled = True
+        self.snoozed_until = 0.0         # an open palm keeps the creature quiet until then
         # facts(unit, since, until) -> {"present_s", "temp_min", "temp_max", "loud_events"} from the log
         self.facts = facts
 
@@ -67,17 +84,29 @@ class Life:
         now = self.clock()
         kind = msg.get("type")
         if kind == "event":
-            return self._event(unit, msg.get("name"), now)
+            out = self._event(unit, msg.get("name"), now)
+            return out if msg.get("name") in HAND_SIGNS else self._quiet(out, now)
         if kind == "state":
-            return self._state(unit, msg, now)
+            return self._quiet(self._state(unit, msg, now), now)
         return [], []
+
+    def _quiet(self, out, now):
+        """While snoozed the rules still keep track of the room but neither act nor notify."""
+        return ([], []) if now < self.snoozed_until else out
 
     def tick(self):
         if not self.enabled:
             return [], []
         now = self.clock()
+        if now < self.snoozed_until:
+            return [], []                    # postponed, not used up: the reminders come after the snooze
         actions, notices = [], []
         for unit, u in self.units.items():
+            if (u.present and u.slouch_since and now - u.slouch_since >= POSTURE_AFTER_S
+                    and now - u.last_posture >= POSTURE_COOLDOWN_S):
+                u.last_posture = now
+                actions += self._body(unit, "curious", "perk", None)
+                notices.append((unit, "posture", "You have been hunched over for about 10 minutes. Sit up and roll your shoulders?"))
             if u.present and u.present_since and now - u.present_since >= BREAK_AFTER_S and now - u.last_break >= BREAK_AFTER_S:
                 u.last_break = now
                 minutes = int((now - u.present_since) // 60)
@@ -115,9 +144,42 @@ class Life:
         elif name == "someone_left" and u.present:
             u.present, u.left_at = False, now
             u.present_since = None
-        elif name == "looked_at" and now - u.last_look >= LOOK_COOLDOWN_S:
+            u.slouch_since = None
+        elif name == "looked_at" and now - u.last_look >= LOOK_COOLDOWN_S and now >= self.snoozed_until:
             u.last_look = now                    # noticed: perk up, silently (no chirp, no notice)
             actions += self._body(unit, "pleased", "perk", None)
+        elif name == "waved" and now - u.last_wave >= WAVE_COOLDOWN_S:
+            u.last_wave = now                    # waves back
+            actions += self._body(unit, "pleased", "wag", "hello")
+        elif name in ("thumbs_up", "nodded"):
+            actions += self._body(unit, "pleased", "nod", None)
+        elif name == "shook_head":
+            actions += self._body(unit, "neutral", None, None)
+        elif name == "slouching":
+            u.slouch_since = u.slouch_since or now
+        elif name == "sat_up":
+            u.slouch_since = None
+        elif name == "stretched" and now - u.last_stretch >= STRETCH_COOLDOWN_S:
+            u.last_stretch = now                 # a stretch is a short break: the break timer starts again
+            if u.present:
+                u.present_since = now
+            u.slouch_since = None
+            actions += self._body(unit, "pleased", "wag", None)
+        elif name in ("yawned", "eyes_heavy"):
+            u.tired_signs.append(now)
+            while u.tired_signs and now - u.tired_signs[0] > TIRED_WINDOW_S:
+                u.tired_signs.popleft()
+            if (len(u.tired_signs) >= TIRED_SIGNS and now - u.last_tired >= TIRED_COOLDOWN_S
+                    and now >= self.snoozed_until):
+                u.last_tired = now
+                u.tired_signs.clear()
+                actions += self._body(unit, "sleepy", None, None)
+                later = self.local(now).hour >= EVENING_H
+                notices.append((unit, "tired", "You look tired. Maybe call it a day?" if later
+                                else "You look tired. A proper break and some water?"))
+        elif name == "open_palm":
+            self.snoozed_until = now + SNOOZE_S  # not now: quiet for half an hour
+            actions += self._body(unit, "neutral", "nod", None)
         return actions, notices
 
     # rules driven by readings
@@ -131,7 +193,8 @@ class Life:
             while u.temps and now - u.temps[0][0] > WARM_WINDOW_S:
                 u.temps.popleft()
             lowest = min(t for _, t in u.temps)
-            if (temp >= WARM_LIMIT_C or temp - lowest >= WARM_RISE_C) and now - u.last_warm >= WARM_COOLDOWN_S:
+            if ((temp >= WARM_LIMIT_C or temp - lowest >= WARM_RISE_C) and now - u.last_warm >= WARM_COOLDOWN_S
+                    and now >= self.snoozed_until):
                 u.last_warm = now
                 actions += self._body(unit, "alert", None, None)
                 why = f"up {temp - lowest:.1f}° in the last half hour" if temp - lowest >= WARM_RISE_C else "above 29°"
