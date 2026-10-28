@@ -84,7 +84,7 @@ struct CreatureDetailView: View {
         ScrollViewReader { proxy in
         ScrollView {
             VStack(spacing: Theme.Spacing.l) {
-                CreatureHero(unit: unit, name: name, compact: true)
+                CreatureHero(unit: unit, name: name, compact: true, talks: true)
                 sectionPicker
                     .padding(.horizontal, Theme.Spacing.l)
                 Group {

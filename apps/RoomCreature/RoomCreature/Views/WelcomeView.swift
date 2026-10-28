@@ -5,30 +5,28 @@ import SwiftUI
 struct WelcomeView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var previewMood: Mood = .curious
 
     var body: some View {
         ScrollView {
             VStack(spacing: Theme.Spacing.xl) {
-                Spacer(minLength: Theme.Spacing.xl)
-                ZStack {
-                    MoodGlow(color: Theme.MoodColor.color(for: .neutral), animates: !reduceMotion, diameter: 300)
-                    CreatureFace(state: BodyState())
-                        .frame(width: 240, height: 240)
-                }
-                .frame(height: 260)
-                .accessibilityHidden(true)
+                CreatureStage(state: previewState, animates: !reduceMotion, height: 280)
+                    .padding(.top, Theme.Spacing.s)
+                    .accessibilityLabel("Fennec is feeling \(previewMood.title.lowercased())")
 
                 VStack(spacing: Theme.Spacing.s) {
-                    Text("Meet your creature")
+                    Text("A little creature.\nA lot of personality.")
                         .font(Theme.Text.display)
                         .foregroundStyle(Theme.textPrimary)
                         .multilineTextAlignment(.center)
-                    Text("A small desk companion that hears, sees and feels the room, and shows how it feels with its ears, tail and glowing cheeks.")
+                    Text("A curious little bot for your desk. It notices the room and comes to life with expressive antenna ears, a wiggly tail and glowing cheeks.")
                         .font(Theme.Text.body)
                         .foregroundStyle(Theme.textSecondary)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 420)
                 }
+
+                moodPreview
 
                 HubStatusRow()
                     .frame(maxWidth: 420)
@@ -60,6 +58,65 @@ struct WelcomeView: View {
                 .accessibilityLabel("Settings")
             }
         }
+    }
+
+    private var previewState: BodyState {
+        var state = BodyState()
+        state.mood = previewMood.rawValue
+        state.cheekHex = Theme.MoodColor.hex(for: previewMood)
+        switch previewMood {
+        case .curious:
+            state.earLeft = 20
+            state.earRight = 5
+            state.tilt = 8
+            state.pan = -8
+            state.tail = 16
+        case .pleased:
+            state.earLeft = 12
+            state.earRight = 12
+            state.tail = 25
+        case .sleepy:
+            state.earLeft = -22
+            state.earRight = -22
+            state.tilt = -10
+        default:
+            break
+        }
+        return state
+    }
+
+    private var moodPreview: some View {
+        VStack(spacing: Theme.Spacing.s) {
+            Text("Try a mood")
+                .font(Theme.Text.caption)
+                .foregroundStyle(Theme.textSecondary)
+            FlowLayout(spacing: Theme.Spacing.s) {
+                previewButton(.curious, title: "Curious", symbol: "sparkles")
+                previewButton(.pleased, title: "Happy", symbol: "heart.fill")
+                previewButton(.sleepy, title: "Sleepy", symbol: "moon.zzz.fill")
+            }
+        }
+        .frame(maxWidth: 420)
+    }
+
+    private func previewButton(_ mood: Mood, title: String, symbol: String) -> some View {
+        let selected = previewMood == mood
+        return Button {
+            Haptics.light()
+            previewMood = mood
+        } label: {
+            Label(title, systemImage: symbol)
+                .font(Theme.Text.chip)
+                .foregroundStyle(selected ? Theme.textPrimary : Theme.textSecondary)
+                .padding(.horizontal, Theme.Spacing.l)
+                .padding(.vertical, Theme.Spacing.m)
+                .background(selected ? Theme.tintFill(mood.color) : Theme.surface, in: Capsule())
+                .overlay(Capsule().strokeBorder(selected ? mood.color.opacity(0.6) : Theme.hairline, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Preview \(title.lowercased()) mood")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: selected)
     }
 }
 

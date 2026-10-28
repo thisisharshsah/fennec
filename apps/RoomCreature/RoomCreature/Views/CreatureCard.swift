@@ -13,7 +13,7 @@ struct CreatureThumbnail: View {
                 .fill(Theme.tintFill(tint))
             Circle()
                 .strokeBorder(tint.opacity(0.35), lineWidth: 1)
-            CreatureFace(state: state)
+            CreatureFace(state: state, animates: unit.isConnected)
                 .frame(width: size * 0.92, height: size * 0.92)
                 .saturation(unit.isConnected ? 1 : 0.2)
                 .opacity(unit.isConnected ? 1 : 0.7)
@@ -36,13 +36,14 @@ struct CreatureCard: View {
         HStack(spacing: Theme.Spacing.l) {
             CreatureThumbnail(unit: unit, size: 72)
             VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                Text(name)
-                    .font(Theme.Text.title)
-                    .foregroundStyle(Theme.textPrimary)
-                    .lineLimit(1)
+                HStack(spacing: Theme.Spacing.s) {
+                    Text(name)
+                        .font(Theme.Text.title)
+                        .foregroundStyle(Theme.textPrimary)
+                        .lineLimit(1)
+                    ConnectionPill(unit: unit)
+                }
                 CreatureMoodLine(unit: unit, lastSeen: lastSeen)
-                ConnectionPill(unit: unit, showsQuality: false)
-                    .padding(.top, 2)
             }
             Spacer(minLength: Theme.Spacing.s)
             Image(systemName: "chevron.right")
