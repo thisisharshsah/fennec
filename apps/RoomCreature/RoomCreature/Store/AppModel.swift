@@ -28,7 +28,7 @@ final class AppModel {
     }
 
     var desiredEndpoint: BridgeEndpoint {
-        if settings.usesBonjour, let service = browser.services.first {
+        if settings.usesBonjour, let service = browser.services.first ?? browser.lastService {
             return .bonjour(service)
         }
         return settings.manualEndpoint
@@ -85,6 +85,22 @@ final class AppModel {
     }
 
     var isHubConnected: Bool { client.status == .connected }
+
+    /// When the app went to the background, for `resume`.
+    @ObservationIgnored var backgroundedAt: Date?
+
+    /// Back in the foreground: iOS closed the connection while the app was away, and the Bonjour
+    /// search may have failed. Search again, and connect again unless the link is still alive.
+    func resume() {
+        let away = backgroundedAt.map { Date.now.timeIntervalSince($0) } ?? 0
+        backgroundedAt = nil
+        browser.restart()
+        // after a while away the hub has dropped this app even if the connection still looks open
+        if client.status != .connected || away > 20 {
+            client.fallback = settings.manualEndpoint
+            if client.target == nil { client.connect(to: desiredEndpoint) } else { client.reconnectNow() }
+        }
+    }
 
     func applyDesiredEndpoint() {
         client.fallback = settings.manualEndpoint

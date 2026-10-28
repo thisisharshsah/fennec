@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct RoomCreatureApp: App {
     @State private var model = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -34,6 +35,10 @@ struct RoomCreatureApp: App {
                     #endif
                 }
                 .onChange(of: model.desiredEndpoint) { model.applyDesiredEndpoint() }
+                .onChange(of: scenePhase) { old, new in
+                    if new == .background { model.backgroundedAt = .now }
+                    if new == .active && old != .active { model.resume() }
+                }
         }
         .defaultSize(width: 960, height: 720)
     }
