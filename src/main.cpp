@@ -25,6 +25,7 @@
 #include "provision.h"
 #include "chirp.h"
 #include "journal.h"
+#include "hmac_sha256.h"
 #include <IWatchdog.h>
 #include <malloc.h>
 
@@ -46,6 +47,17 @@ TwoWire bus(PB11, PB10);
 
 static void emitEvent(const char *name, const char *extraJson = nullptr);
 static void emitHello();
+
+// Command signing: the hub gives this unit a key over the USB cable only; every command that
+// arrives over Wi-Fi must then be "S <n> <hmac> <json>" with HMAC-SHA256(key, nonce|n|json) and
+// n above the last one seen in this connection. The nonce is fresh for every Wi-Fi connection.
+struct UnitKey { uint32_t magic; uint8_t key[32]; };
+static const uint32_t UNITKEY_MAGIC = 0x4B455931, UNITKEY_OFFSET = 768;
+static UnitKey unitKey;
+static bool keyed = false;
+static char wifiNonce[17] = "";
+static uint32_t lastCmdN = 0;
+static bool cmdFromSerial = false;
 
 HTS221Sensor  hts(&bus);
 LPS22HBSensor lps(&bus);
@@ -263,17 +275,67 @@ static void emitEvent(const char *name, const char *extraJson)
   out();
 }
 
+static const char *helloAuth()
+{
+  static char hex[65];
+  if (!keyed || !wifiNonce[0]) { hex[0] = 0; return hex; }
+  const char *tag = "hello|";
+  const void *parts[4] = {tag, wifiNonce, "|", linkCfg.unit};
+  size_t lens[4] = {strlen(tag), strlen(wifiNonce), 1, strlen(linkCfg.unit)};
+  uint8_t mac[32];
+  hmacSha256(unitKey.key, 32, parts, lens, 4, mac);
+  toHex(mac, 32, hex);
+  return hex;
+}
+
+static void freshNonce()
+{
+  Sha256 h; sha256Init(h);
+  uint32_t seed[6] = {health.boots, wifiReconnects, (uint32_t)micros(), HAL_GetUIDw0(), HAL_GetUIDw1(), HAL_GetUIDw2()};
+  sha256Update(h, seed, sizeof seed);
+  uint8_t d[32]; sha256Final(h, d);
+  toHex(d, 8, wifiNonce);
+  lastCmdN = 0;
+}
+
+// Returns the JSON command inside a signed line, or nullptr (and reports why) when it must be dropped.
+static const char *verifySigned(char *lineIn)
+{
+  if (!keyed) return lineIn;                                   // not provisioned yet: as before
+  if (lineIn[0] != 'S' || lineIn[1] != ' ') { emitEvent("error", "\"what\":\"unsigned command\""); return nullptr; }
+  char *p = lineIn + 2;
+  char *end;
+  unsigned long n = strtoul(p, &end, 10);
+  if (end == p || *end != ' ') { emitEvent("error", "\"what\":\"bad signed line\""); return nullptr; }
+  p = end + 1;
+  if (strlen(p) < 66 || p[64] != ' ') { emitEvent("error", "\"what\":\"bad signed line\""); return nullptr; }
+  uint8_t sig[32];
+  if (!fromHex(p, sig, 32)) { emitEvent("error", "\"what\":\"bad signed line\""); return nullptr; }
+  const char *json = p + 65;
+  char nbuf[12]; snprintf(nbuf, sizeof nbuf, "%lu", n);
+  const void *parts[5] = {wifiNonce, "|", nbuf, "|", json};
+  size_t lens[5] = {strlen(wifiNonce), 1, strlen(nbuf), 1, strlen(json)};
+  uint8_t want[32];
+  hmacSha256(unitKey.key, 32, parts, lens, 5, want);
+  if (!equalCt(sig, want, 32)) { emitEvent("error", "\"what\":\"bad signature\""); return nullptr; }
+  if (n <= lastCmdN) { emitEvent("error", "\"what\":\"replayed command\""); return nullptr; }
+  lastCmdN = n;
+  return json;
+}
+
 static void emitHello()
 {
   char ip[20]; linkIp(ip, sizeof ip);
   snprintf(line, sizeof line,
            "{\"type\":\"hello\",\"unit\":\"%s\",\"fw\":\"%s\",\"sensors\":[%s%s%s%s%s%s],"
-           "\"wifi\":{\"module\":\"%s\",\"ssid\":\"%s\",\"joined\":%s,\"ip\":\"%s\",\"bridge\":%s},\"acked\":%lu,\"last_seq\":%lu}",
+           "\"wifi\":{\"module\":\"%s\",\"ssid\":\"%s\",\"joined\":%s,\"ip\":\"%s\",\"bridge\":%s},\"acked\":%lu,\"last_seq\":%lu,"
+           "\"keyed\":%s,\"nonce\":\"%s\",\"auth\":\"%s\"}",
            linkCfg.unit, FW_VERSION,
            haveHts ? "\"hts221\"," : "", haveLps ? "\"lps22hb\"," : "", haveTof ? "\"vl53l0x\"," : "",
            haveImu ? "\"lsm6dsl\"," : "", haveMag ? "\"lis3mdl\"," : "", haveMic ? "\"mp34dt01x2\"" : "\"\"",
            linkModuleFw(), linkCfg.ssid, linkJoined() ? "true" : "false", ip, linkConnected() ? "true" : "false",
-           (unsigned long)ackedSeq, (unsigned long)journalLastSeq());
+           (unsigned long)ackedSeq, (unsigned long)journalLastSeq(),
+           keyed ? "true" : "false", wifiNonce, helloAuth());
   // tidy the sensors list if the mic is missing: ["a","b",""] -> drop the trailing empty string
   char *p = strstr(line, ",\"\"]"); if (p) { memmove(p, p + 3, strlen(p + 3) + 1); }
   p = strstr(line, "[\"\"]"); if (p) { memmove(p + 1, p + 3, strlen(p + 3) + 1); }
@@ -598,6 +660,17 @@ static void handleCommand(const char *cmdLine)
     out();
     return;
   }
+  if (!strcmp(cmd, "set_key")) {                 // only over the USB cable, never over Wi-Fi
+    char hex[65] = "";
+    if (!cmdFromSerial) { emitEvent("error", "\"what\":\"set_key needs the cable\""); return; }
+    if (!jsonStr(cmdLine, "key", hex, sizeof hex) || strlen(hex) != 64 || !fromHex(hex, unitKey.key, 32)) {
+      emitEvent("error", "\"what\":\"bad key\""); return;
+    }
+    unitKey.magic = UNITKEY_MAGIC; cfgSave(&unitKey, sizeof unitKey, UNITKEY_OFFSET); keyed = true;
+    emitEvent("keyed");
+    emitHello();
+    return;
+  }
   if (!strcmp(cmd, "restart")) { rebootSoon("command"); return; }
   if (!strcmp(cmd, "forget_wifi")) {            // clear the stored network and go into setup mode
     linkSetWifi("", ""); linkSave();
@@ -626,7 +699,7 @@ static void pollSerial()
   while (Serial.available()) {
     char c = (char)Serial.read();
     if (c == '\n' || c == '\r') {
-      if (len) { buf[len] = 0; handleCommand(buf); len = 0; }
+      if (len) { buf[len] = 0; cmdFromSerial = true; handleCommand(buf); cmdFromSerial = false; len = 0; }
     } else if (len < sizeof buf - 1) {
       buf[len++] = c;
     } else {
@@ -647,6 +720,8 @@ void setup()
   bodyBegin();
   chirpBegin();
   healthBegin();
+  cfgLoad(&unitKey, sizeof unitKey, UNITKEY_OFFSET);
+  keyed = unitKey.magic == UNITKEY_MAGIC;
   journalBegin(health.boots, health.ackedSeq);  // boot counter tells this boot's records apart; acked seq survives reboots
   pinMode(USER_BTN, INPUT);
   bool buttonHeld = digitalRead(USER_BTN) == LOW;   // blue button held during boot
@@ -654,6 +729,7 @@ void setup()
   linkBegin(!buttonHeld);                       // button held: no join attempt, the module stays fresh for the scan
   if (buttonHeld || !linkCfg.ssid[0]) enterSetup(buttonHeld ? "button" : "no_network");
   wasConnected = linkConnected();
+  freshNonce();                                 // also for the connection made during startup
   emitHello();
   { char extra[40]; snprintf(extra, sizeof extra, "\"reset\":\"%s\",\"boots\":%lu", resetCause, (unsigned long)health.boots); emitEvent("boot", extra); }
   IWatchdog.begin(32000000);            // 32 s: longer than any blocking Wi-Fi join or connect
@@ -667,6 +743,17 @@ void loop()
   IWatchdog.reload();
   if (healthDirty && millis() - lastHealthSave > 60000) {   // persist the acknowledged seq at most once a minute
     healthDirty = false; lastHealthSave = millis(); cfgSave(&health, sizeof health, HEALTH_OFFSET);
+  }
+  {                                              // blue button: a short press opens pairing on the hub
+    static bool wasDown = false; static uint32_t downAt = 0, lastPress = 0;
+    bool down = digitalRead(USER_BTN) == LOW;
+    if (down && !wasDown) downAt = now;
+    if (!down && wasDown && now - downAt >= 30 && now - downAt < 2000 && now - lastPress > 1000) {
+      lastPress = now;
+      emitEvent("button");
+      bodyGesture("perk"); bodyCheek(0x6ea8ff); chirpPlay("ok");
+    }
+    wasDown = down;
   }
   pollSerial();
   if (setupMode) {
@@ -686,12 +773,15 @@ void loop()
   chirpTick();
   { static char wifiCmd[200];
     if (!setupMode && !soundCaptureActive() && linkReadLine(wifiCmd, sizeof wifiCmd)) {   // the poll stalls 300 ms; not while recording
-      if (!strstr(wifiCmd, "\"ack\"")) { char extra[24]; snprintf(extra, sizeof extra, "\"len\":%u", (unsigned)strlen(wifiCmd)); emitEvent("wifi_cmd", extra); }
-      handleCommand(wifiCmd);
+      const char *json = verifySigned(wifiCmd);
+      if (json) {
+        if (!strstr(json, "\"ack\"")) { char extra[24]; snprintf(extra, sizeof extra, "\"len\":%u", (unsigned)strlen(json)); emitEvent("wifi_cmd", extra); }
+        handleCommand(json);
+      }
     } }
   if (linkConnected() != wasConnected) {
     wasConnected = linkConnected();
-    if (wasConnected) { emitHello(); wifiReconnects++; lastAckMs = millis(); }   // the bridge learns our name over the new link
+    if (wasConnected) { wifiReconnects++; freshNonce(); emitHello(); lastAckMs = millis(); }   // the bridge learns our name over the new link
     emitEvent(wasConnected ? "wifi_connected" : "wifi_disconnected");
     if (wasConnected) chirpPlay("ok");
   }
