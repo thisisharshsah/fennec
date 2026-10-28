@@ -5,7 +5,7 @@ scored by automatic checks and by a judge model.
 
     tools/bench/.venv/bin/python tools/bench/bench.py run mlx-community/Qwen3.5-2B-4bit
     tools/bench/.venv/bin/python tools/bench/bench.py run <model> <adapter dir>     a fine tuned one (train.py)
-    tools/bench/.venv/bin/python tools/bench/bench.py teacher          today's brain through the gateway
+    tools/bench/.venv/bin/python tools/bench/bench.py teacher [model]  a model in Farhelm (default gpt-oss-20b)
     tools/bench/.venv/bin/python tools/bench/bench.py judge            scores every answer file not yet judged
     tools/bench/.venv/bin/python tools/bench/bench.py report           the table
 
@@ -88,8 +88,9 @@ def gateway():
     return client, env.get("FARHELM_MODEL", "gpt-oss-20b")
 
 
-def teacher():
+def teacher(name=None):
     client, model = gateway()
+    model = name or model
     cases, _ = load_cases()
     out = []
     for case in cases:
@@ -99,7 +100,7 @@ def teacher():
         text = " ".join(b.text for b in r.content if b.type == "text")
         out.append({"id": case["id"], "text": clean(text), "seconds": round(time.time() - t, 2), "tps": None})
         print(f"{case['id']:12} {out[-1]['seconds']:5.1f} s  {out[-1]['text'][:90]}", flush=True)
-    save("gpt-oss-20b (today)", out, {})
+    save("gpt-oss-20b (today)" if model == "gpt-oss-20b" else model + " (Farhelm)", out, {})
 
 
 def save(model, answers, meta):
@@ -222,4 +223,4 @@ def report():
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "report"
-    {"run": lambda: run(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None), "teacher": teacher, "judge": judge, "report": report}[cmd]()
+    {"run": lambda: run(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None), "teacher": lambda: teacher(sys.argv[2] if len(sys.argv) > 2 else None), "judge": judge, "report": report}[cmd]()
