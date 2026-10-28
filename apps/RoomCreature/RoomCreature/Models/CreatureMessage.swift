@@ -2,15 +2,16 @@ import Foundation
 
 /// What a message is about, for the conversation filter and the per-kind notification switches.
 enum MessageTopic: String, CaseIterable, Identifiable, Sendable {
-    case said, greetings, breaks, room, night
+    case said, greetings, breaks, wellbeing, room, night
 
     var id: String { rawValue }
 
-    /// Notice kinds from the hub: say, greet, morning, break, warm, goodnight. Unknown kinds count as said.
+    /// Notice kinds from the hub: say, greet, morning, break, posture, tired, warm, goodnight. Unknown kinds count as said.
     init(kind: String?) {
         switch kind {
         case "greet", "morning": self = .greetings
         case "break": self = .breaks
+        case "posture", "tired": self = .wellbeing
         case "warm": self = .room
         case "goodnight": self = .night
         default: self = .said
@@ -23,6 +24,7 @@ enum MessageTopic: String, CaseIterable, Identifiable, Sendable {
         case .said: "Said"
         case .greetings: "Greetings"
         case .breaks: "Breaks"
+        case .wellbeing: "Posture"
         case .room: "Room"
         case .night: "Night"
         }
@@ -34,6 +36,7 @@ enum MessageTopic: String, CaseIterable, Identifiable, Sendable {
         case .said: "Things it says"
         case .greetings: "Greetings and good morning"
         case .breaks: "Break reminders"
+        case .wellbeing: "Posture and tiredness"
         case .room: "Room alerts"
         case .night: "Goodnight"
         }
@@ -44,6 +47,7 @@ enum MessageTopic: String, CaseIterable, Identifiable, Sendable {
         case .said: "bubble.left"
         case .greetings: "hand.wave"
         case .breaks: "cup.and.saucer"
+        case .wellbeing: "figure.stand"
         case .room: "thermometer.sun"
         case .night: "moon.zzz"
         }
@@ -73,6 +77,8 @@ struct CreatureMessage: Identifiable, Hashable, Sendable {
         case "greet": "hand.wave"
         case "morning": "sun.max"
         case "break": "cup.and.saucer"
+        case "posture": "figure.stand"
+        case "tired": "zzz"
         case "warm": "thermometer.sun"
         case "goodnight": "moon.zzz"
         default: "bubble.left"

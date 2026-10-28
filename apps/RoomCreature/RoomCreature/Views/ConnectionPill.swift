@@ -1,24 +1,24 @@
 import SwiftUI
 
-/// "Wi-Fi · ATT3arfv3R · strong" or "USB cable" or "Offline": where a unit is connected, at a glance.
+/// Where a unit is connected, as an icon only: Wi-Fi (its bars show the signal), a USB cable, or
+/// offline. The words ("Wi-Fi · ATT3arfv3R · strong") are for VoiceOver and the hover tip; Manage
+/// shows the network itself.
 struct ConnectionPill: View {
     let unit: UnitState
-    /// Cards are narrow: drop the signal word there.
+    /// Kept for callers that dropped the signal word on narrow cards; the icon carries it now.
     var showsQuality = true
+    @ScaledMetric(relativeTo: .caption) private var side: CGFloat = 28
 
     var body: some View {
-        HStack(spacing: Theme.Spacing.xs) {
-            Image(systemName: symbol, variableValue: level)
-                .symbolRenderingMode(.hierarchical)
-            Text(text)
-                .lineLimit(1)
-        }
-        .font(Theme.Text.caption.weight(.medium))
-        .foregroundStyle(tint)
-        .padding(.horizontal, Theme.Spacing.m)
-        .padding(.vertical, Theme.Spacing.xs)
-        .background(tint.opacity(0.12), in: Capsule())
-        .accessibilityElement(children: .combine)
+        Image(systemName: symbol, variableValue: level)
+            .symbolRenderingMode(.hierarchical)
+            .font(Theme.Text.caption.weight(.semibold))
+            .foregroundStyle(tint)
+            .frame(width: side, height: side)
+            .background(tint.opacity(0.12), in: Circle())
+            .help(text)
+            .accessibilityElement()
+            .accessibilityLabel(text)
     }
 
     private var onWifi: Bool { unit.isConnected && unit.link == "wifi" }
@@ -47,7 +47,7 @@ struct ConnectionPill: View {
         if onWifi {
             var parts = ["Wi-Fi"]
             if let ssid = unit.wifi?.ssid, !ssid.isEmpty { parts.append(ssid) }
-            if showsQuality, let quality { parts.append(quality) }
+            if let quality { parts.append(quality) }
             return parts.joined(separator: " · ")
         }
         return "USB cable"

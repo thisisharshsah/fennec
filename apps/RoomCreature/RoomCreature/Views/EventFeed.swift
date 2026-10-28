@@ -77,6 +77,9 @@ private struct EventRow: View {
         case "speech", "spoke": Theme.MoodColor.color(for: .curious)
         case "someone_in_front", "someone_left": Theme.MoodColor.color(for: .listening)
         case "looked_at", "looked_away": Theme.MoodColor.color(for: .surprised)
+        case "waved", "thumbs_up", "open_palm", "nodded", "shook_head", "stretched": Theme.MoodColor.color(for: .curious)
+        case "slouching", "sat_up": Theme.MoodColor.color(for: .alert)
+        case "yawned", "eyes_heavy": Theme.MoodColor.color(for: .sleepy)
         case "clap", "knock", "moved": Theme.MoodColor.color(for: .alert)
         case "wifi_disconnected": Theme.negative
         case "wifi_connected", "boot": Theme.positive

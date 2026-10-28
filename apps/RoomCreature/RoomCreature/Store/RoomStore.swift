@@ -24,6 +24,8 @@ final class RoomStore {
     private(set) var vision: [String: VisionFrame] = [:]
     /// The latest live picture from each creature's eye, while one is asked for. Memory only.
     private(set) var pictures: [String: LivePicture] = [:]
+    /// When the camera eye runs; nil from a hub without one.
+    private(set) var eye: EyeStatus?
     /// Creatures known to this app, persisted across launches.
     let registry = CreatureRegistry()
     /// What the creatures said and the owner's replies.
@@ -49,6 +51,8 @@ final class RoomStore {
             if let id = outline.forUnit {
                 vision[registry.currentID(for: id)] = VisionFrame(outline)
             }
+        case .eye(let status):
+            eye = status
         case .picture(let picture):
             if let id = picture.forUnit, let base64 = picture.jpeg, let jpeg = Data(base64Encoded: base64) {
                 pictures[registry.currentID(for: id)] = LivePicture(jpeg: jpeg, receivedAt: .now)
@@ -60,6 +64,7 @@ final class RoomStore {
         case .hello(let hello):
             bridgeVersion = hello.bridge
             lifeEnabled = hello.life ?? lifeEnabled
+            eye = hello.eye ?? eye
             bridgeLanIP = hello.lanIP
             bridgeUnitPort = hello.unitPort
             for summary in hello.units ?? [] {

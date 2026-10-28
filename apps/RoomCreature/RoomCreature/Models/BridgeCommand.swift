@@ -22,6 +22,7 @@ struct BridgeCommand: Encodable, Sendable {
     var days: Int?
     var kind: String?
     var revoke: String?
+    var mode: String?
 
     static func express(_ mood: Mood, unit: String) -> BridgeCommand {
         BridgeCommand(cmd: "express", unit: unit, mood: mood.rawValue)
@@ -106,6 +107,11 @@ struct BridgeCommand: Encodable, Sendable {
     /// Lists the paired devices, revoking one first when an id is given.
     static func devices(revoke: String? = nil) -> BridgeCommand {
         BridgeCommand(cmd: "devices", unit: "", revoke: revoke)
+    }
+
+    /// When the camera eye runs: off, auto (while someone is at the desk) or on.
+    static func eye(mode: EyeStatus.Mode) -> BridgeCommand {
+        BridgeCommand(cmd: "eye", unit: "", mode: mode.rawValue)
     }
 
     /// Starts or stops the eye's live picture for this app.

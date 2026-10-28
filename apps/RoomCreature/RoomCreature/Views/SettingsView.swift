@@ -156,7 +156,7 @@ struct SettingsView: View {
         } header: {
             Text("Behaviour")
         } footer: {
-            Text("Your creatures greet you when you come back, say good morning and goodnight, suggest a break after 50 minutes in front of them, and notice when the room gets warm. Each one at most once in a while.")
+            Text("Your creatures greet you when you come back, say good morning and goodnight, suggest a break after 50 minutes in front of them, and notice when the room gets warm. With the eye on they also notice slouching and tiredness, and a stretch counts as a break. Each one at most once in a while.")
         }
     }
 

@@ -298,6 +298,7 @@ private struct MessageRow: View {
         case .said: Theme.accent
         case .greetings: Theme.MoodColor.color(for: .pleased)
         case .breaks: Theme.warning
+        case .wellbeing: Theme.MoodColor.color(for: .alert)
         case .room: Theme.negative
         case .night: Theme.MoodColor.color(for: .curious)
         }

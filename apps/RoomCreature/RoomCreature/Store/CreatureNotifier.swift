@@ -146,6 +146,8 @@ final class CreatureNotifier: NSObject {
         case "greet": "\(name) is happy to see you"
         case "morning": "Good morning from \(name)"
         case "break": "\(name) thinks you need a break"
+        case "posture": "\(name) noticed your posture"
+        case "tired": "\(name) thinks you look tired"
         case "warm": "\(name) feels warm"
         case "goodnight": "\(name) is going to sleep"
         default: name

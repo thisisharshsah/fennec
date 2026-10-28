@@ -14,6 +14,14 @@ struct VisionMessage: Decodable, Sendable {
     var bodies: [[Double]]?
     /// [x, y, w, h, looking (1 or 0)].
     var faces: [[Double]]?
+    /// Hands, [x, y, w, h].
+    var hands: [[Double]]?
+    /// A sign read in the last 2 s: waved, thumbs_up, open_palm, nodded, shook_head, stretched, yawned...
+    var sign: String?
+    /// upright, slouching or close (leaning in to the screen), against the owner's own baseline.
+    var posture: String?
+    /// Yawns or heavy eyes lately.
+    var tired: Bool?
     var aspect: Double?
     /// Where the head points: -1 left .. +1 right of the picture.
     var aim: Double?
@@ -24,8 +32,52 @@ struct VisionMessage: Decodable, Sendable {
     var ts: Double?
 
     enum CodingKeys: String, CodingKey {
-        case unit, people, looking, present, bodies, faces, aspect, aim, pan, since, ts
+        case unit, people, looking, present, bodies, faces, hands, sign, posture, tired, aspect, aim, pan, since, ts
         case forUnit = "for"
+    }
+}
+
+/// When the eye runs (the hub starts and stops it) and whether the camera is in use now.
+struct EyeStatus: Decodable, Sendable, Equatable {
+    enum Mode: String, Decodable, Sendable, CaseIterable, Identifiable {
+        case off, auto, on
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .off: "Off"
+            case .auto: "Auto"
+            case .on: "On"
+            }
+        }
+        var symbol: String {
+            switch self {
+            case .off: "eye.slash"
+            case .auto: "person.crop.circle.badge.checkmark"
+            case .on: "eye"
+            }
+        }
+        var explanation: String {
+            switch self {
+            case .off: "The camera is released."
+            case .auto: "On while someone is at the desk, off two minutes after they leave."
+            case .on: "The camera runs all the time."
+            }
+        }
+    }
+
+    var mode: Mode
+    var running: Bool
+    var camera: String?
+    var here: Bool?
+
+    enum CodingKeys: String, CodingKey { case mode, running, camera, here }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        mode = (try? c.decode(Mode.self, forKey: .mode)) ?? .off
+        running = (try? c.decode(Bool.self, forKey: .running)) ?? false
+        camera = try? c.decode(String.self, forKey: .camera)
+        here = try? c.decode(Bool.self, forKey: .here)
     }
 }
 
@@ -57,6 +109,10 @@ struct VisionFrame: Sendable {
     let isPresent: Bool
     let bodies: [CGRect]
     let faces: [Face]
+    let hands: [CGRect]
+    let sign: String?
+    let posture: String?
+    let isTired: Bool
     let aspect: Double
     let aim: Double?
     let pan: Int?
@@ -71,6 +127,10 @@ struct VisionFrame: Sendable {
         faces = (message.faces ?? []).compactMap { values in
             Self.rect(values).map { Face(rect: $0, looking: values.count > 4 && values[4] > 0) }
         }
+        hands = (message.hands ?? []).compactMap(Self.rect)
+        sign = message.sign
+        posture = message.posture
+        isTired = message.tired ?? false
         aspect = message.aspect ?? 16.0 / 9.0
         aim = message.aim
         pan = message.pan
