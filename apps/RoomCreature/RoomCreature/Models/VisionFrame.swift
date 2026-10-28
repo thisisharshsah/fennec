@@ -93,6 +93,22 @@ struct EyeStatus: Decodable, Sendable, Equatable {
     }
 }
 
+/// The hub's safety watch: away mode and the still check-in, and whether it is asking right now.
+struct SafetyStatus: Decodable, Sendable, Equatable {
+    var away: Bool
+    var checkin: Bool
+    var asking: Bool
+
+    enum CodingKeys: String, CodingKey { case away, checkin, asking }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        away = (try? c.decode(Bool.self, forKey: .away)) ?? false
+        checkin = (try? c.decode(Bool.self, forKey: .checkin)) ?? true
+        asking = (try? c.decode(Bool.self, forKey: .asking)) ?? false
+    }
+}
+
 /// One live picture from the eye, sent only to apps that asked for it and never kept by the hub.
 struct PictureMessage: Decodable, Sendable {
     var forUnit: String?

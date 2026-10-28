@@ -31,6 +31,7 @@ from life import Life
 from brain import Brain
 from eye_control import EyeControl
 from scene import LABELS as ACTIVITY_LABELS, Scene
+from safety import Safety
 import security
 from zeroconf import ServiceInfo
 from zeroconf.asyncio import AsyncZeroconf
@@ -113,6 +114,9 @@ class Store:
                  "life": bool(life and life.enabled)}
         if eye is not None:
             hello["eye"] = {k: v for k, v in eye.status().items() if k != "type"}
+        safety = getattr(self, "safety", None)
+        if safety is not None:
+            hello["safety"] = {k: v for k, v in safety.status().items() if k != "type"}
         return hello
 
     def history_message(self):
@@ -768,6 +772,10 @@ async def ws_handler(ws, store, serial_link):
                     if "describe" in msg:
                         await eye.set_describe(bool(msg["describe"]))
                     await announce_eye(store, force=True)
+            elif msg.get("cmd") == "safety":                 # away watch and the still check-in, kept across restarts
+                store.safety.configure(away=msg.get("away"), checkin=msg.get("checkin"))
+                log.info("safety: away %s, check-in %s", store.safety.away, store.safety.checkin)
+                await send_to_apps(store, store.safety.status())
             elif msg.get("cmd") == "snapshot" and device is None:   # one picture, for the describer on this Mac
                 store.picture_once.add(ws)
             elif msg.get("cmd") == "described" and device is None:  # the local model's sentence about the scene
@@ -895,7 +903,7 @@ def push_notice(unit, kind, text):
     url = cfg.get("ntfy_server", "https://ntfy.sh").rstrip("/") + "/" + cfg["ntfy_topic"]
     title = {"say": f"{unit.capitalize()} says", "greet": "Welcome back", "morning": "Good morning",
              "break": "Break time", "warm": "Warm room", "goodnight": "Goodnight",
-             "posture": "Posture", "tired": "Tired?"}.get(kind, unit.capitalize())
+             "posture": "Posture", "tired": "Tired?", "checkin": "Are you OK?", "alarm": "Alarm"}.get(kind, unit.capitalize())
     req = urllib.request.Request(url, data=text.encode(), method="POST",
                                  headers={"Title": title.encode().decode("latin1", "ignore"), "Tags": "fox_face"})
     try:
@@ -1073,6 +1081,39 @@ async def life_loop(store, life):
             log.warning("life tick failed: %s", e)
 
 
+async def send_to_apps(store, msg):
+    """A hub setting for every app (not a unit's message: not logged)."""
+    text = json.dumps(dict(msg, ts=time.time()))
+    for ws in list(store.clients):
+        try:
+            await ws.send(text)
+        except Exception:
+            store.clients.discard(ws)
+
+
+async def run_safety(store, items):
+    """Carry out what the safety rules decided: notices (alarms always go out) and body commands."""
+    for item in items:
+        if item[0] == "notice":
+            _, unit, kind, text = item
+            log.warning("safety %s: %s", kind, text)
+            await post_notice(store, unit, kind, text)
+        elif item[0] == "cmd":
+            _, unit, cmd = item
+            await route_command(store, dict(cmd, unit=unit))
+    if items:
+        await send_to_apps(store, store.safety.status())
+
+
+async def safety_loop(store):
+    while True:
+        await asyncio.sleep(10)
+        try:
+            await run_safety(store, store.safety.tick())
+        except Exception as e:  # noqa: BLE001
+            log.warning("safety tick failed: %s", e)
+
+
 async def announce_eye(store, force=False):
     """Tell the apps the eye's mode and whether the camera is in use, when that changed."""
     status = store.eye.status()
@@ -1164,6 +1205,9 @@ async def main():
 
         async def hook(msg):
             try:
+                creature = body_unit(store) or store.last_creature      # still Crawl while it is offline
+                store.last_creature = creature
+                await run_safety(store, store.safety.observe(msg, creature))
                 if store.eye.observe(msg, body_unit(store)):
                     await store.eye.apply()
                     await announce_eye(store)
@@ -1180,6 +1224,8 @@ async def main():
                 log.warning("life rule failed: %s", e)
         store.life_hook = hook
         store.scene = Scene()
+        store.safety = Safety()
+        store.last_creature = None
         store.eye = EyeControl(log)
         store.eye.release_leftovers()
         await store.eye.apply()
@@ -1190,6 +1236,7 @@ async def main():
             asyncio.get_running_loop().add_signal_handler(sig, lambda: asyncio.ensure_future(release_and_exit()))
         log.info("eye %s", store.eye.mode)
         eyer = asyncio.create_task(eye_loop(store))
+        safer = asyncio.create_task(safety_loop(store))
         lifer = asyncio.create_task(life_loop(store, life))
         log.info("daily life %s", "on" if life.enabled else "off")
         try:
@@ -1198,6 +1245,7 @@ async def main():
             keeper.cancel()
             lifer.cancel()
             eyer.cancel()
+            safer.cancel()
             await store.eye.stop()                         # the camera is released with the hub
             await zc.async_unregister_all_services()
             await zc.async_close()

@@ -2,7 +2,10 @@ import Foundation
 
 /// What a message is about, for the conversation filter and the per-kind notification switches.
 enum MessageTopic: String, CaseIterable, Identifiable, Sendable {
-    case said, greetings, breaks, wellbeing, room, night
+    case said, greetings, breaks, wellbeing, room, night, safety
+
+    /// Topics the owner can switch off; safety alarms always come through.
+    static var switchable: [MessageTopic] { allCases.filter { $0 != .safety } }
 
     var id: String { rawValue }
 
@@ -12,6 +15,7 @@ enum MessageTopic: String, CaseIterable, Identifiable, Sendable {
         case "greet", "morning": self = .greetings
         case "break": self = .breaks
         case "posture", "tired": self = .wellbeing
+        case "checkin", "alarm": self = .safety
         case "warm": self = .room
         case "goodnight": self = .night
         default: self = .said
@@ -27,6 +31,7 @@ enum MessageTopic: String, CaseIterable, Identifiable, Sendable {
         case .wellbeing: "Posture"
         case .room: "Room"
         case .night: "Night"
+        case .safety: "Safety"
         }
     }
 
@@ -39,6 +44,7 @@ enum MessageTopic: String, CaseIterable, Identifiable, Sendable {
         case .wellbeing: "Posture and tiredness"
         case .room: "Room alerts"
         case .night: "Goodnight"
+        case .safety: "Safety alarms"
         }
     }
 
@@ -50,6 +56,7 @@ enum MessageTopic: String, CaseIterable, Identifiable, Sendable {
         case .wellbeing: "figure.stand"
         case .room: "thermometer.sun"
         case .night: "moon.zzz"
+        case .safety: "exclamationmark.shield"
         }
     }
 }
@@ -79,6 +86,8 @@ struct CreatureMessage: Identifiable, Hashable, Sendable {
         case "break": "cup.and.saucer"
         case "posture": "figure.stand"
         case "tired": "zzz"
+        case "checkin": "questionmark.bubble"
+        case "alarm": "exclamationmark.triangle"
         case "warm": "thermometer.sun"
         case "goodnight": "moon.zzz"
         default: "bubble.left"

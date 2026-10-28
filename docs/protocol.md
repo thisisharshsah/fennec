@@ -231,6 +231,18 @@ the words become hints for 45 s (a video call, writing, a game, a video, a
 phone or a drink), and "Nobody is at the desk" overrules a body box without
 a face for 25 s. `{"cmd":"eye","describe":0}` turns the describer off.
 
+Safety (`bridge/safety.py`): alarms come as notices of kind `checkin` and
+`alarm`, only to the owner's apps (and the ntfy relay if set up), and apps
+show them even when other kinds are switched off. The eye's outline carries
+`slumped_s` (still, and no face with open eyes); 5 minutes of it brings a
+check-in, and no answer (a sign, a reply, a look or moving) in 2 minutes an
+alarm. While away, someone at the desk, the creature moved, picked up or
+shaken, or a loud bang raises an alarm; so do heat rising 4° in ten minutes
+or above 40°, humidity up 15 points, a bang of 85 dB, and the creature
+offline for a minute. `{"cmd":"safety","away":1,"checkin":0}` sets the watch
+(kept in data/safety.json); the hub's hello carries `"safety":{"away","checkin","asking"}`
+and apps get `{"type":"safety",...}` on changes. It calls no one.
+
 When the eye runs: `{"cmd":"eye","mode":"off|auto|on"}`. The hub starts and
 stops the eye program itself (auto: while the creature's own distance sensor
 feels someone, and two minutes after), keeps the mode in data/eye.json, puts

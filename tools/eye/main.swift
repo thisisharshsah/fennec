@@ -385,6 +385,11 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
     var postureReader = PostureReader()
     var tiredReader = TiredReader()
     var thingReader = ThingReader()
+    // For the safety check-in: since when the person has not moved, and since when no face with open
+    // eyes has been seen (head down on the desk, slumped, eyes closed).
+    var stillRef: CGRect?
+    var stillSince: Date?
+    var headDownSince: Date?
     var handBoxes: [CGRect] = []
     var lastSign: (name: String, at: Date)?
 
@@ -458,6 +463,7 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
             x = seenFrames == 0 ? seen : x * 0.6 + seen * 0.4      // smoothed, so the head glides
             size = Double(nearest.boundingBox.height)              // 0..1, bigger is closer
         }
+        stillness(found, face: nearestFace, now: now)
         facing = faceList.contains { abs($0.yaw?.doubleValue ?? 1) < 0.35 }
         report(now)
         looks(now)
@@ -470,6 +476,7 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
         if let shown = lastSign, now.timeIntervalSince(shown.at) < 2 { outline["sign"] = shown.name }
         if present, let posture = postureReader.state { outline["posture"] = posture.rawValue }
         if present { outline["tired"] = tiredReader.isTired }
+        outline["slumped_s"] = Int(slumped(now))
         let things = thingReader.things(at: now)
         if !things.isEmpty { outline["things"] = things }
         if present { outline["aim"] = (x * 100).rounded() / 100; outline["pan"] = pan(x) }
@@ -486,6 +493,32 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
                                 aim: present ? x : nil, lines: readout(now))
             DispatchQueue.main.async { viewer?.show(shapes) }
         }
+    }
+
+    /// Movement is the nearest body's box shifting or resizing by 3 % of the picture, or hands in view.
+    func stillness(_ bodies: [VNHumanObservation], face: VNFaceObservation?, now: Date) {
+        guard present, let body = bodies.max(by: { $0.boundingBox.height < $1.boundingBox.height })?.boundingBox else {
+            stillRef = nil; stillSince = nil; headDownSince = nil
+            return
+        }
+        if let ref = stillRef, abs(body.midX - ref.midX) < 0.03, abs(body.midY - ref.midY) < 0.03,
+           abs(body.height - ref.height) < 0.03, handBoxes.isEmpty {
+            if stillSince == nil { stillSince = now }
+        } else {
+            stillRef = body
+            stillSince = now
+        }
+        if face != nil && !tiredReader.eyesClosed {
+            headDownSince = nil
+        } else if headDownSince == nil {
+            headDownSince = now
+        }
+    }
+
+    /// Seconds slumped and still: both conditions at once.
+    func slumped(_ now: Date) -> Double {
+        guard present, let still = stillSince, let down = headDownSince else { return 0 }
+        return min(now.timeIntervalSince(still), now.timeIntervalSince(down))
     }
 
     /// The head turn the hub makes for x (the hub's eye_pan, repeated here for the window).
@@ -533,6 +566,7 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
             lines.append(String(format: "closeness %.2f (bigger is closer)", size))
             if let posture = postureReader.state { lines.append("posture: \(posture.rawValue)") }
             if tiredReader.isTired { lines.append("looks tired") }
+            if slumped(now) >= 60 { lines.append("slumped and still for \(Int(slumped(now))) s") }
             let things = thingReader.things(at: now)
             if !things.isEmpty { lines.append("sees: \(things.joined(separator: ", "))") }
             if let since = arrivedAt { lines.append("here for \(Int(now.timeIntervalSince(since)) / 60) min \(Int(now.timeIntervalSince(since)) % 60) s") }

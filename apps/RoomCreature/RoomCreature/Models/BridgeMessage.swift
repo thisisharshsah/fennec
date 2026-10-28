@@ -27,6 +27,8 @@ enum BridgeMessage: Sendable {
     case picture(PictureMessage)
     /// When the eye runs, and whether the camera is in use.
     case eye(EyeStatus)
+    /// The safety watch's settings and state.
+    case safety(SafetyStatus)
 }
 
 struct BridgeMessageError: Error {
@@ -84,6 +86,7 @@ extension BridgeMessage {
         case "vision": return .vision(try decoder.decode(VisionMessage.self, from: data))
         case "picture": return .picture(try decoder.decode(PictureMessage.self, from: data))
         case "eye": return .eye(try decoder.decode(EyeStatus.self, from: data))
+        case "safety": return .safety(try decoder.decode(SafetyStatus.self, from: data))
         default: throw BridgeMessageError(type: type)
         }
     }
@@ -98,6 +101,8 @@ struct HelloMessage: Decodable, Sendable {
     var life: Bool?
     /// When the camera eye runs (hub 0.5+).
     var eye: EyeStatus?
+    /// The safety watch (hub 0.5+).
+    var safety: SafetyStatus?
     var unit: String?
     var fw: String?
     var sensors: [String]?
@@ -106,7 +111,7 @@ struct HelloMessage: Decodable, Sendable {
     var ts: Double?
 
     enum CodingKeys: String, CodingKey {
-        case bridge, units, unit, fw, sensors, wifi, link, ts, life, eye
+        case bridge, units, unit, fw, sensors, wifi, link, ts, life, eye, safety
         case lanIP = "lan_ip"
         case unitPort = "unit_port"
     }

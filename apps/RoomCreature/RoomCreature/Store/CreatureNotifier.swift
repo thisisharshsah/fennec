@@ -121,8 +121,9 @@ final class CreatureNotifier: NSObject {
 
     /// Called for every event the app receives; posts the ones that are the creature talking.
     func handle(_ event: RoomEvent, creatureName: String) {
-        guard isEnabled, event.isNotice, let text = event.text, !text.isEmpty else { return }
-        guard isOn(MessageTopic(kind: event.kind)) else { return }
+        guard event.isNotice, let text = event.text, !text.isEmpty else { return }
+        let urgent = MessageTopic(kind: event.kind) == .safety
+        guard urgent || (isEnabled && isOn(MessageTopic(kind: event.kind))) else { return }   // alarms always
         guard Date.now.timeIntervalSince(event.time) < Self.freshness, posted.insert(event.id).inserted else { return }
         let content = UNMutableNotificationContent()
         content.title = title(for: event, name: creatureName)
@@ -130,7 +131,10 @@ final class CreatureNotifier: NSObject {
         content.categoryIdentifier = Self.category
         content.threadIdentifier = event.unit
         content.userInfo = ["unit": event.unit]
-        if isFocused || isQuiet() {
+        if urgent {
+            content.interruptionLevel = .timeSensitive
+            content.sound = .default
+        } else if isFocused || isQuiet() {
             content.interruptionLevel = .passive
             content.sound = nil
         } else {
@@ -148,6 +152,8 @@ final class CreatureNotifier: NSObject {
         case "break": "\(name) thinks you need a break"
         case "posture": "\(name) noticed your posture"
         case "tired": "\(name) thinks you look tired"
+        case "checkin": "\(name) is checking on you"
+        case "alarm": "⚠️ \(name): alarm"
         case "warm": "\(name) feels warm"
         case "goodnight": "\(name) is going to sleep"
         default: name

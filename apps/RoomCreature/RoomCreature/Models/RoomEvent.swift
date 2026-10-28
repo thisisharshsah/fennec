@@ -38,6 +38,8 @@ struct RoomEvent: Identifiable, Hashable, Sendable {
             case "break": return "cup.and.saucer.fill"
             case "posture": return "figure.stand"
             case "tired": return "zzz"
+            case "checkin": return "questionmark.bubble.fill"
+            case "alarm": return "exclamationmark.triangle.fill"
             case "warm": return "thermometer.sun.fill"
             case "goodnight": return "moon.zzz.fill"
             default: return "sparkles"

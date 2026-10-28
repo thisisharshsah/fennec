@@ -12,9 +12,31 @@ struct SettingsView: View {
     @State private var hostDraft = ""
     @State private var portDraft: Int?
 
+    @ViewBuilder
+    private var safetySection: some View {
+        if let safety = model.store.safety {
+            Section {
+                Toggle(isOn: Binding(get: { safety.away }, set: { model.client.send(.safety(away: $0)) })) {
+                    Label("I'm away", systemImage: "house.lodge")
+                }
+                Toggle(isOn: Binding(get: { safety.checkin }, set: { model.client.send(.safety(checkin: $0)) })) {
+                    Label("Check on me", systemImage: "questionmark.bubble")
+                }
+            } header: {
+                Text("Safety")
+            } footer: {
+                Text(safety.away
+                    ? "While you are away, anyone at your desk, your creature being moved or a loud bang raises an alarm. Turn this off when you are back."
+                    : "If you are slumped and still at your desk for 5 minutes, your creature asks if you are OK; with no answer in 2 minutes it raises an alarm. Heat, a loud bang, a jump in humidity or the creature going offline raise one too. Alarms come only to your devices and always sound. This is not an emergency service: it calls no one.")
+            }
+            .disabled(!model.isHubConnected)
+        }
+    }
+
     var body: some View {
         @Bindable var settings = model.settings
         Form {
+            safetySection
             lifeSection
             brainSection
             NotificationSettingsSections(notifier: model.notifier, openSystemSettings: openSystemSettings)
@@ -254,7 +276,7 @@ private struct NotificationSettingsSections: View {
         }
 
         Section {
-            ForEach(MessageTopic.allCases) { topic in
+            ForEach(MessageTopic.switchable) { topic in
                 Toggle(isOn: Binding(
                     get: { notifier.isOn(topic) },
                     set: { notifier.set(topic, on: $0) }

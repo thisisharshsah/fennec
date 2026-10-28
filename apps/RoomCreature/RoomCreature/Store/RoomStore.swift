@@ -26,6 +26,8 @@ final class RoomStore {
     private(set) var pictures: [String: LivePicture] = [:]
     /// When the camera eye runs; nil from a hub without one.
     private(set) var eye: EyeStatus?
+    /// The safety watch; nil from a hub without one.
+    private(set) var safety: SafetyStatus?
     /// Creatures known to this app, persisted across launches.
     let registry = CreatureRegistry()
     /// What the creatures said and the owner's replies.
@@ -53,6 +55,8 @@ final class RoomStore {
             }
         case .eye(let status):
             eye = status
+        case .safety(let status):
+            safety = status
         case .picture(let picture):
             if let id = picture.forUnit, let base64 = picture.jpeg, let jpeg = Data(base64Encoded: base64) {
                 pictures[registry.currentID(for: id)] = LivePicture(jpeg: jpeg, receivedAt: .now)
@@ -65,6 +69,7 @@ final class RoomStore {
             bridgeVersion = hello.bridge
             lifeEnabled = hello.life ?? lifeEnabled
             eye = hello.eye ?? eye
+            safety = hello.safety ?? safety
             bridgeLanIP = hello.lanIP
             bridgeUnitPort = hello.unitPort
             for summary in hello.units ?? [] {
