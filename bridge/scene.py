@@ -66,7 +66,8 @@ class Scene:
         """The local model's sentence about the scene. Returns the hints found in it."""
         now = self.clock()
         self.note, self.note_at = text.strip(), now
-        found = [h for h, pattern in HINT_WORDS.items() if re.search(pattern, text, re.IGNORECASE)]
+        sure = re.split(r"\b(?:possibly|perhaps|maybe|might|could be)\b", text, flags=re.IGNORECASE)[0]
+        found = [h for h, pattern in HINT_WORDS.items() if re.search(pattern, sure, re.IGNORECASE)]
         for h in found:
             self._hints[h] = now
         return found

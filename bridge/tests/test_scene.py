@@ -100,3 +100,9 @@ def test_the_model_seeing_an_empty_desk_overrules_a_shaky_detection():
     assert run(scene, clock, here(), 10) == ["away"]
     scene.describe("Nobody is at the desk.")
     assert run(scene, clock, here(faces=[[0.4, 0.5, 0.1, 0.15, 1]]), 10) == ["working"]   # a face: someone is there
+
+
+def test_guesses_after_possibly_are_not_hints():
+    scene = S.Scene(clock=Clock())
+    assert scene.describe("The person is sitting and looking down, possibly typing or writing on paper.") == []
+    assert scene.describe("The person is eating something at the desk.") == ["food"]

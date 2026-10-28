@@ -12,9 +12,11 @@ never written to disk.
 """
 import asyncio
 import base64
+import concurrent.futures
 import io
 import json
 import os
+import re
 import time
 
 import websockets
@@ -25,11 +27,22 @@ from mlx_vlm.prompt_utils import apply_chat_template
 HUB = os.environ.get("ROOM_BRIDGE_URL", "ws://127.0.0.1:8777/")
 MODEL = os.environ.get("FENNEC_VLM", "mlx-community/Qwen2.5-VL-3B-Instruct-4bit")
 INTERVAL_S = 20
-QUESTION = ("You are the eyes of a small desk companion robot. In one short sentence, say what the person "
-            "at the desk is doing right now and what is in their hands or in front of them, for example "
-            "typing, on a video call, reading, eating, drinking, on their phone, writing on paper, playing "
-            "a game or watching a video. If nobody is there, say: Nobody is at the desk. "
-            "Do not guess who anyone is.")
+# A small model grabs a ready-made answer when offered one ("Nobody is at the desk"), so it is only
+# offered when the eye itself sees no face; otherwise the question is about the person it can see.
+PERSON_QUESTION = ("In one short sentence, say what the person in this picture is doing right now and what "
+                   "they are holding or using, for example typing, on a video call, reading, eating, drinking, "
+                   "on their phone, writing on paper, playing a game or watching a video. "
+                   "Do not guess who anyone is.")
+OPEN_QUESTION = ("Is there a person in this picture? If yes, in one short sentence say what they are doing and "
+                 "what they are holding. If no, answer: no person.")
+
+
+# MLX keeps its GPU stream per thread: the model must be loaded and used on the same one.
+MODEL_THREAD = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+
+async def on_model_thread(fn, *args):
+    return await asyncio.get_running_loop().run_in_executor(MODEL_THREAD, fn, *args)
 
 
 def log(text):
@@ -40,18 +53,23 @@ class Describer:
     def __init__(self):
         started = time.time()
         self.model, self.processor = load(MODEL)
-        self.prompt = apply_chat_template(self.processor, self.model.config, QUESTION, num_images=1)
+        self.prompts = {seen: apply_chat_template(self.processor, self.model.config, q, num_images=1)
+                        for seen, q in ((True, PERSON_QUESTION), (False, OPEN_QUESTION))}
         log(f"model {MODEL} ready in {time.time() - started:.0f} s")
 
-    def describe(self, jpeg):
+    def describe(self, jpeg, face_seen):
         image = Image.open(io.BytesIO(jpeg)).convert("RGB")
-        out = generate(self.model, self.processor, self.prompt, [image], max_tokens=48, verbose=False)
+        out = generate(self.model, self.processor, self.prompts[face_seen], [image], max_tokens=48, verbose=False)
         text = getattr(out, "text", out).strip().split("\n")[0]
-        return text[:300]
+        if text.lower().rstrip(".").startswith("no person"):
+            return "Nobody is at the desk."
+        text = re.sub(r"^(?:yes[,.]?\s*)?(?:there is (?:a|one) person in (?:the|this) picture\.?\s*)?", "", text,
+                      flags=re.IGNORECASE)
+        return (text[:1].upper() + text[1:])[:300]
 
 
 async def main():
-    describer = await asyncio.to_thread(Describer)
+    describer = await on_model_thread(Describer)
     while True:
         try:
             async with websockets.connect(HUB, open_timeout=5, max_size=4 * 1024 * 1024) as ws:
@@ -64,15 +82,18 @@ async def main():
 async def session(ws, describer):
     someone_at = 0.0                  # when the eye last saw someone
     asked_at = 0.0
+    face_seen = False
     async for text in ws:
         msg = json.loads(text)
         kind = msg.get("type")
         now = time.time()
-        if kind == "vision" and msg.get("present"):
-            someone_at = now
+        if kind == "vision":
+            face_seen = bool(msg.get("faces"))
+            if msg.get("present"):
+                someone_at = now
         elif kind == "picture" and msg.get("jpeg"):
             started = time.time()
-            sentence = await asyncio.to_thread(describer.describe, base64.b64decode(msg["jpeg"]))
+            sentence = await on_model_thread(describer.describe, base64.b64decode(msg["jpeg"]), face_seen)
             seconds = round(time.time() - started, 1)
             log(f"{seconds} s: {sentence}")
             await ws.send(json.dumps({"cmd": "described", "text": sentence, "seconds": seconds}))
