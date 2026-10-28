@@ -1,6 +1,6 @@
 """
 Benchmark for Crawl's brain: the same situations and prompts the hub uses (bridge/brain.py), answered
-by small open models through MLX and by today's brain (gpt-oss-20b on the Conscious gateway), then
+by small open models through MLX and by the gateway brain (gpt-oss-20b through Farhelm), then
 scored by automatic checks and by a judge model.
 
     tools/bench/.venv/bin/python tools/bench/bench.py run mlx-community/Qwen3.5-2B-4bit
@@ -84,9 +84,8 @@ def run(model_id, adapter=None):
 def gateway():
     import anthropic
     env = dict(l.strip().split("=", 1) for l in open(ROOT / ".env") if "=" in l and not l.startswith("#"))
-    client = anthropic.Anthropic(base_url=env["CONSCIOUS_API_URL"], api_key=env["CONSCIOUS_API_KEY"],
-                                 default_headers={"X-Conscious-Client": "fennec/bench"}, timeout=300)
-    return client, env.get("CONSCIOUS_MODEL", "gpt-oss-20b")
+    client = anthropic.Anthropic(base_url=env["FARHELM_API_URL"], api_key=env["FARHELM_API_KEY"], timeout=300)
+    return client, env.get("FARHELM_MODEL", "gpt-oss-20b")
 
 
 def teacher():

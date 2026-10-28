@@ -69,7 +69,7 @@ Run the bridge (first time: create its environment):
 
 ```bash
 ~/.local/bin/uv venv -p 3.12 bridge/.venv
-~/.local/bin/uv pip install -p bridge/.venv/bin/python pyserial websockets zeroconf "mcp>=2"
+~/.local/bin/uv pip install -p bridge/.venv/bin/python pyserial websockets zeroconf "mcp>=2" anthropic mlx-lm
 bridge/.venv/bin/python bridge/bridge.py
 ```
 

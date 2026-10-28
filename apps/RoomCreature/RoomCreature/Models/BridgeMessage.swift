@@ -289,12 +289,14 @@ struct BrainStatus: Decodable, Sendable, Equatable {
     var dailyCapUsd: Double?
     var spentTodayUsd: Double?
     var model: String?
-    /// "conscious" (the owner's local model gateway) or "anthropic".
+    /// "own" (Crawl's tuned model on the hub), "farhelm" (the owner's local model gateway) or "anthropic".
     var provider: String?
     var local: Bool?
+    /// The gateway model behind the own one, if any.
+    var fallback: String?
 
     enum CodingKeys: String, CodingKey {
-        case enabled, model, provider, local
+        case enabled, model, provider, local, fallback
         case hasKey = "has_key"
         case dailyCapUsd = "daily_cap_usd"
         case spentTodayUsd = "spent_today_usd"

@@ -16,7 +16,9 @@ def brain(tmp_path, monkeypatch):
     monkeypatch.setattr(BR, "KEY_FILE", tmp_path / "anthropic_key")
     monkeypatch.setattr(BR, "STATE_FILE", tmp_path / "brain.json")
     monkeypatch.setattr(BR, "ENV_FILE", tmp_path / ".env")
-    for var in ("ANTHROPIC_API_KEY", "CONSCIOUS_API_URL", "CONSCIOUS_API_KEY", "CONSCIOUS_MODEL"):
+    monkeypatch.setattr(BR, "OWN_ADAPTER", tmp_path / "adapter")         # no own model unless a test adds one
+    for var in ("ANTHROPIC_API_KEY", "FARHELM_API_URL", "FARHELM_API_KEY", "FARHELM_MODEL",
+                "FENNEC_BRAIN_MODEL", "FENNEC_BRAIN_ADAPTER"):
         monkeypatch.delenv(var, raising=False)
     return BR.Brain(logging.getLogger("test"))
 
@@ -92,13 +94,13 @@ def test_switch_off(brain):
     assert brain.ready() == (False, "off")
 
 
-def test_conscious_gateway_wins_and_is_free(brain):
+def test_farhelm_gateway_wins_and_is_free(brain):
     BR.KEY_FILE.write_text("sk-test\n")
-    BR.ENV_FILE.write_text("CONSCIOUS_API_URL=http://127.0.0.1:8400/p/fennec\nCONSCIOUS_API_KEY=k\nCONSCIOUS_MODEL=gpt-oss-20b\n")
+    BR.ENV_FILE.write_text("FARHELM_API_URL=http://127.0.0.1:7842/p/fennec\nFARHELM_API_KEY=k\nFARHELM_MODEL=gpt-oss-20b\n")
     fake = FakeMessages(text="Cosy in here.")
     with_fake_client(brain, fake)
     status = brain.status()
-    assert status["provider"] == "conscious" and status["local"] and status["model"] == "gpt-oss-20b"
+    assert status["provider"] == "farhelm" and status["local"] and status["model"] == "gpt-oss-20b"
     assert asyncio.run(brain.answer("crawl", HISTORY, "temperature 26 C")) == "Cosy in here."
     call = fake.calls[0]
     assert call["model"] == "gpt-oss-20b" and "betas" not in call and isinstance(call["system"], str)
@@ -106,6 +108,51 @@ def test_conscious_gateway_wins_and_is_free(brain):
 
 
 def test_local_model_ignores_the_spending_cap(brain):
-    BR.ENV_FILE.write_text("CONSCIOUS_API_URL=http://x/p/fennec\nCONSCIOUS_API_KEY=k\n")
+    BR.ENV_FILE.write_text("FARHELM_API_URL=http://x/p/fennec\nFARHELM_API_KEY=k\n")
     brain.configure(daily_cap_usd=0)
     assert brain.ready() == (True, "")
+
+
+class FakeOwn:
+    """Stands in for the tuned model: answers with `text`, or None as while it loads."""
+    def __init__(self, text):
+        self.text, self.failed, self.calls = text, False, []
+
+    async def create(self, persona, turns):
+        self.calls.append(turns)
+        return self.text
+
+
+def test_own_model_answers_first_and_is_free(brain):
+    BR.KEY_FILE.write_text("sk-test\n")
+    BR.ENV_FILE.write_text("FARHELM_API_URL=http://x/p/fennec\nFARHELM_API_KEY=k\n")
+    own, remote = FakeOwn("I hear you."), FakeMessages(text="From the gateway.")
+    brain.own = lambda: own
+    with_fake_client(brain, remote)
+    status = brain.status()
+    assert status["provider"] == "own" and status["local"] and status["fallback"] == "gpt-oss-20b"
+    assert asyncio.run(brain.answer("crawl", HISTORY, "temperature 26 C")) == "I hear you."
+    assert remote.calls == [] and "temperature 26 C" in own.calls[0][-1]["content"][0]["text"]
+    assert brain.status()["spent_today_usd"] == 0.0
+
+
+def test_farhelm_answers_while_the_own_model_loads(brain):
+    BR.ENV_FILE.write_text("FARHELM_API_URL=http://x/p/fennec\nFARHELM_API_KEY=k\n")
+    brain.own = lambda: FakeOwn(None)
+    with_fake_client(brain, FakeMessages(text="From the gateway."))
+    assert asyncio.run(brain.answer("crawl", HISTORY, "")) == "From the gateway."
+
+
+def test_own_model_never_falls_back_to_the_cloud(brain):
+    BR.KEY_FILE.write_text("sk-test\n")
+    own, cloud = FakeOwn(None), FakeMessages(text="From Claude.")
+    brain.own = lambda: own
+    with_fake_client(brain, cloud)
+    assert brain.provider() is None and brain.ready() == (True, "")
+    assert asyncio.run(brain.answer("crawl", HISTORY, "")) is None
+    assert cloud.calls == []
+
+
+def test_own_model_needs_its_adapter(tmp_path):
+    assert not BR.OwnModel.available("mlx-community/x", tmp_path)
+    assert not BR.OwnModel.available("off", tmp_path)

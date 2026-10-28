@@ -1252,6 +1252,8 @@ async def main():
         store.life = life
         store.brain = Brain(log)
         log.info("brain: %s", store.brain.status())
+        if store.brain.own():
+            store.brain.own().start_loading()                  # ready by the first message; Farhelm until then
 
         async def hook(msg):
             try:

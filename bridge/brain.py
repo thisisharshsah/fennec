@@ -2,14 +2,22 @@
 The creature answers back: when the owner replies in Chat, a language model
 writes the creature's answer from the room's context and the recent conversation.
 
-Where the model comes from, first match wins:
-1. Conscious, the owner's local model gateway (the standard for every project on
-   this Mac): CONSCIOUS_API_URL, CONSCIOUS_API_KEY and CONSCIOUS_MODEL from the
-   environment or from fennec/.env. Local model, no cost.
-2. Claude directly: ANTHROPIC_API_KEY, or the file data/anthropic_key. A daily
-   spending cap (data/brain.json, default 0.50 USD) applies.
-Both are ignored by git.
+Where the answer comes from:
+1. Crawl's own small brain, on the hub itself: a model tuned for Crawl
+   (tools/bench/train.py), run with MLX on a thread of its own. Used when its
+   adapter is present (FENNEC_BRAIN_ADAPTER, default the tuned Qwen 3.5 4B in
+   data/train/adapters) and mlx_lm is installed; FENNEC_BRAIN_MODEL=off skips it.
+2. Farhelm, the owner's local model gateway, as the fallback while the own brain
+   loads or when it fails: FARHELM_API_URL, FARHELM_API_KEY and FARHELM_MODEL
+   (default gpt-oss-20b) from the environment or from fennec/.env.
+   Like Farhelm itself, nothing local ever falls back to a cloud model.
+3. Claude directly, only when nothing local is set up: ANTHROPIC_API_KEY, or the
+   file data/anthropic_key. A daily spending cap (data/brain.json, default
+   0.50 USD) applies.
+Keys and adapters are ignored by git.
 """
+import asyncio
+import concurrent.futures
 import datetime as dt
 import json
 import os
@@ -28,6 +36,9 @@ PRICE_CACHE_READ, PRICE_CACHE_WRITE = 0.20 / 1e6, 5.00 / 1e6
 DEFAULT_DAILY_CAP = 0.50
 MAX_TOKENS = 1024                                       # room for thinking plus a two sentence reply
 MIN_GAP_S = 3                                           # at most one answer every few seconds
+OWN_MODEL = "mlx-community/Qwen3.5-4B-4bit"             # benchmark: grounded 0.95, judge 3.9 / 4.7 / 3.8
+OWN_ADAPTER = DATA / "train" / "adapters" / "Qwen3.5-4B-4bit"
+OWN_TOKENS = 160                                        # what the benchmark gave it; replies are two sentences
 
 PERSONA = """You are {name}, a small creature that lives on your owner's desk. You look like a little \
 fox with big ears and round cheeks that glow in different colours. You cannot walk yet; the words you \
@@ -63,12 +74,78 @@ def thought_prompt(facts, recent, when=None):
               "plainly and gently.")
 
 
+class OwnModel:
+    """The tuned small model, loaded in the background on first use. MLX keeps its GPU stream per
+    thread, so loading and every answer happen on one thread of its own."""
+
+    def __init__(self, log, model_id, adapter):
+        self.log, self.model_id, self.adapter = log, model_id, adapter
+        self._thread = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="own-brain")
+        self._loading = None
+        self._model = self._tokenizer = None
+        self.failed = False
+
+    @staticmethod
+    def available(model_id, adapter):
+        if model_id == "off" or not (pathlib.Path(adapter) / "adapters.safetensors").exists():
+            return False
+        try:
+            import mlx_lm  # noqa: F401
+        except ImportError:
+            return False
+        return True
+
+    def _load(self):
+        from mlx_lm import load
+        started = time.time()
+        self._model, self._tokenizer = load(self.model_id, adapter_path=str(self.adapter))
+        self.log.info("own brain: %s loaded in %.0f s", self.model_id, time.time() - started)
+
+    def start_loading(self):
+        if self._loading is None:
+            self._loading = asyncio.get_running_loop().run_in_executor(self._thread, self._load)
+            self._loading.add_done_callback(self._loaded)
+
+    def _loaded(self, future):
+        if future.exception():
+            self.failed = True
+            self.log.warning("own brain: could not load %s: %s", self.model_id, future.exception())
+
+    @property
+    def ready(self):
+        return self._model is not None
+
+    def _generate(self, persona, turns):
+        from mlx_lm import generate
+        from mlx_lm.sample_utils import make_sampler
+        msgs = [{"role": "system", "content": persona}] + [
+            {"role": t["role"], "content": t["content"] if isinstance(t["content"], str)
+             else "\n\n".join(part["text"] for part in t["content"])} for t in turns]
+        prompt = self._tokenizer.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False,
+                                                     enable_thinking=False)
+        text = generate(self._model, self._tokenizer, prompt, max_tokens=OWN_TOKENS,
+                        sampler=make_sampler(temp=0.7, top_p=0.9))
+        return text.split("</think>")[-1].strip().strip('"').strip()
+
+    async def create(self, persona, turns):
+        """The answer, or None while it is still loading or when it fails."""
+        self.start_loading()
+        if not self.ready:
+            return None
+        try:
+            return await asyncio.get_running_loop().run_in_executor(self._thread, self._generate, persona, turns)
+        except Exception as e:  # noqa: BLE001
+            self.log.warning("own brain: %s", e)
+            return None
+
+
 class Brain:
     def __init__(self, log):
         self.log = log
         self._client = None
         self._key_seen = None
         self.last_answer = 0.0
+        self._own = None
 
     # configuration
 
@@ -83,11 +160,27 @@ class Brain:
                     values[k.strip()] = v.strip().strip('"').strip("'")
         return values
 
+    def _env(self):
+        return dict(self._dotenv(), **{k: v for k, v in os.environ.items()
+                                       if k.startswith(("FARHELM_", "ANTHROPIC_", "FENNEC_BRAIN_"))})
+
+    def own(self):
+        """Crawl's own tuned model, when it is set up on this hub; else None."""
+        env = self._env()
+        model_id = env.get("FENNEC_BRAIN_MODEL", OWN_MODEL)
+        adapter = pathlib.Path(env.get("FENNEC_BRAIN_ADAPTER", OWN_ADAPTER))
+        if self._own is None or (self._own.model_id, self._own.adapter) != (model_id, adapter):
+            self._own = OwnModel(self.log, model_id, adapter) if OwnModel.available(model_id, adapter) else None
+        return self._own
+
     def provider(self):
-        """("conscious", url, key, model) or ("anthropic", None, key, MODEL) or None."""
-        env = dict(self._dotenv(), **{k: v for k, v in os.environ.items() if k.startswith(("CONSCIOUS_", "ANTHROPIC_"))})
-        if env.get("CONSCIOUS_API_URL") and env.get("CONSCIOUS_API_KEY"):
-            return ("conscious", env["CONSCIOUS_API_URL"].rstrip("/"), env["CONSCIOUS_API_KEY"], env.get("CONSCIOUS_MODEL", "gpt-oss-20b"))
+        """("farhelm", url, key, model) or ("anthropic", None, key, MODEL) or None: the gateway behind
+        the own model, or Claude when nothing local is set up."""
+        env = self._env()
+        if env.get("FARHELM_API_URL") and env.get("FARHELM_API_KEY"):
+            return ("farhelm", env["FARHELM_API_URL"].rstrip("/"), env["FARHELM_API_KEY"], env.get("FARHELM_MODEL", "gpt-oss-20b"))
+        if self.own():
+            return None
         key = env.get("ANTHROPIC_API_KEY")
         if not key and KEY_FILE.exists():
             key = KEY_FILE.read_text().strip()
@@ -110,15 +203,16 @@ class Brain:
         st = self._state()
         today = dt.date.today().isoformat()
         spent = st.get("spent", {}).get(today, 0.0)
-        p = self.provider()
+        p, own = self.provider(), self.own()
         return {
             "enabled": st.get("enabled", True),
-            "has_key": p is not None,
-            "provider": p[0] if p else None,
-            "local": bool(p and p[0] == "conscious"),
+            "has_key": p is not None or own is not None,
+            "provider": "own" if own else (p[0] if p else None),
+            "local": bool(own or (p and p[0] == "farhelm")),
             "daily_cap_usd": st.get("daily_cap_usd", DEFAULT_DAILY_CAP),
             "spent_today_usd": round(spent, 4),
-            "model": p[3] if p else MODEL,
+            "model": ("Crawl's own brain" + (f", {p[3]} as fallback" if p else "")) if own else (p[3] if p else MODEL),
+            "fallback": p[3] if own and p else None,
         }
 
     def configure(self, enabled=None, daily_cap_usd=None):
@@ -159,10 +253,8 @@ class Brain:
         import anthropic
         p = self.provider()
         if self._client is None or p != self._key_seen:
-            if p[0] == "conscious":         # Anthropic-style /v1/messages on the owner's gateway
-                self._client = anthropic.AsyncAnthropic(
-                    base_url=p[1], api_key=p[2],
-                    default_headers={"X-Conscious-Client": "fennec/creature"})
+            if p[0] == "farhelm":           # Anthropic-style /v1/messages on the owner's gateway
+                self._client = anthropic.AsyncAnthropic(base_url=p[1], api_key=p[2], max_retries=3)
             else:
                 self._client = anthropic.AsyncAnthropic(api_key=p[2])
             self._key_seen = p
@@ -215,10 +307,24 @@ class Brain:
                                   [{"role": "user", "content": thought_prompt(facts, recent)}], "thought")
 
     async def _create(self, persona, turns, what):
+        own = self.own()
+        if own:
+            started = time.time()
+            text = await own.create(persona, turns)
+            if text:
+                self.log.info("brain: %s in %d chars by its own model (%.1f s)", what, len(text), time.time() - started)
+                return text
+            if self.provider() is None:
+                if not own.failed:
+                    self.log.info("brain: own model still loading, no fallback set up")
+                return None
+        return await self._create_remote(persona, turns, what)
+
+    async def _create_remote(self, persona, turns, what):
         import anthropic
         provider = self.provider()
         try:
-            if provider[0] == "conscious":
+            if provider[0] == "farhelm":
                 # the local gateway takes the plain Messages shape; Claude only features stay off
                 response = await self._get_client().messages.create(
                     model=provider[3], max_tokens=MAX_TOKENS, system=persona, messages=turns)
@@ -233,7 +339,7 @@ class Brain:
                     messages=turns,
                 )
         except anthropic.AuthenticationError:
-            self.log.warning("brain: the Anthropic API key was rejected")
+            self.log.warning("brain: the %s key was rejected", provider[0])
             return None
         except anthropic.RateLimitError:
             self.log.warning("brain: rate limited")
@@ -242,9 +348,9 @@ class Brain:
             self.log.warning("brain: API error %s %s", e.status_code, e.message)
             return None
         except anthropic.APIConnectionError:
-            self.log.warning("brain: no connection to the API")
+            self.log.warning("brain: no connection to %s", provider[0])
             return None
-        cost = 0.0 if provider[0] == "conscious" else self._record_cost(response.usage)
+        cost = 0.0 if provider[0] == "farhelm" else self._record_cost(response.usage)
         if response.stop_reason == "refusal":
             self.log.info("brain: declined (%.4f USD)", cost)
             return None
