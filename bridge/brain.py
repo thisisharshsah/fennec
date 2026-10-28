@@ -198,8 +198,10 @@ class Brain:
         prompt = ("What you sense right now (" + time.strftime("%A %H:%M") + "):\n" + facts
                   + "\n\nYour last few thoughts:\n" + earlier
                   + "\n\nWrite your next thought: one short first-person sentence, at most 20 words, about what "
-                    "you notice or wonder right now. Do not repeat your last thoughts. Do not address your owner "
-                    "unless something seems wrong; if it does, say it plainly and gently.")
+                    "you notice or wonder right now. Use only the facts above: you have no light sensor and see "
+                    "nothing beyond them, so do not invent sights, sounds or smells. Do not repeat your last "
+                    "thoughts. Do not address your owner unless something seems wrong; if it does, say it "
+                    "plainly and gently.")
         return await self._create(PERSONA.format(name=name.capitalize()), [{"role": "user", "content": prompt}], "thought")
 
     async def _create(self, persona, turns, what):
