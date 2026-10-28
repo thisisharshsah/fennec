@@ -25,6 +25,7 @@ QUIET_FOR_S = 10 * 60            # empty and quiet this long at night: goodnight
 QUIET_MARGIN_DB = 4.0            # quiet means within this of the quietest level seen recently
 MORNING_START_H, MORNING_END_H = 5, 12
 MORNING_GAP_S = 4 * 3600         # first presence after this long away in the morning
+LOOK_COOLDOWN_S = 2 * 60         # a perk when the owner looks at the creature, at most this often
 
 
 class UnitLife:
@@ -40,14 +41,17 @@ class UnitLife:
         self.quiet_since = None
         self.goodnight_day = None        # the date of the evening we said goodnight
         self.morning_day = None
+        self.last_look = 0.0
 
 
 class Life:
-    def __init__(self, clock=time.time, local=None):
+    def __init__(self, clock=time.time, local=None, facts=None):
         self.clock = clock
         self.local = local or (lambda ts: dt.datetime.fromtimestamp(ts))
         self.units = {}
         self.enabled = True
+        # facts(unit, since, until) -> {"present_s", "temp_min", "temp_max", "loud_events"} from the log
+        self.facts = facts
 
     def _u(self, name):
         return self.units.setdefault(name, UnitLife())
@@ -84,7 +88,7 @@ class Life:
                 if u.goodnight_day != night:
                     u.goodnight_day = night
                     actions += self._body(unit, "sleepy", "droop", "sleepy")
-                    notices.append((unit, "goodnight", "Goodnight. The room is quiet."))
+                    notices.append((unit, "goodnight", "Goodnight." + self._day_recap(unit, now)))
         return actions, notices
 
     # rules driven by events
@@ -103,7 +107,7 @@ class Life:
                 u.morning_day = today
                 u.last_greet = now
                 actions += self._body(unit, "pleased", "perk", "happy")
-                notices.append((unit, "morning", "Good morning."))
+                notices.append((unit, "morning", "Good morning." + self._night_recap(unit, now)))
             elif away is not None and away >= GREET_AFTER_S and now - u.last_greet >= GREET_COOLDOWN_S:
                 u.last_greet = now
                 actions += self._body(unit, "pleased", "wag", "hello")
@@ -111,6 +115,9 @@ class Life:
         elif name == "someone_left" and u.present:
             u.present, u.left_at = False, now
             u.present_since = None
+        elif name == "looked_at" and now - u.last_look >= LOOK_COOLDOWN_S:
+            u.last_look = now                    # noticed: perk up, silently (no chirp, no notice)
+            actions += self._body(unit, "pleased", "perk", None)
         return actions, notices
 
     # rules driven by readings
@@ -141,6 +148,45 @@ class Life:
             else:
                 u.quiet_since = None
         return actions, notices
+
+    # daily recaps (best effort: a missing or failing facts source leaves the plain greeting)
+
+    def _facts(self, unit, since, until):
+        if not self.facts:
+            return None
+        try:
+            return self.facts(unit, since, until)
+        except Exception:
+            return None
+
+    def _night_recap(self, unit, now):
+        t = self.local(now)
+        evening = (t - dt.timedelta(days=1)).replace(hour=NIGHT_START_H, minute=0, second=0, microsecond=0)
+        f = self._facts(unit, evening.timestamp(), now)
+        if not f:
+            return ""
+        parts = []
+        if f.get("temp_min") is not None and f.get("temp_max") is not None:
+            lo, hi = f["temp_min"], f["temp_max"]
+            parts.append(f"Overnight it stayed at {lo:.0f}°" if hi - lo < 0.6 else f"Overnight it was {lo:.0f}° to {hi:.0f}°")
+        loud = f.get("loud_events", 0)
+        if loud == 0:
+            parts.append("and quiet all night")
+        elif loud <= 3:
+            parts.append("with a noise or two")
+        else:
+            parts.append("and fairly noisy")
+        return " " + ", ".join(parts) + "."
+
+    def _day_recap(self, unit, now):
+        t = self.local(now)
+        morning = t.replace(hour=MORNING_START_H, minute=0, second=0, microsecond=0)
+        if t.hour < NIGHT_END_H:
+            morning -= dt.timedelta(days=1)
+        f = self._facts(unit, morning.timestamp(), now)
+        if not f or not f.get("present_s"):
+            return " The room is quiet."
+        return f" Today you spent {self._duration(f['present_s'])} at the desk with me. The room is quiet now."
 
     # helpers
 

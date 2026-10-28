@@ -132,7 +132,7 @@ Wi-Fi details needs the cable, since the old network goes away.
 
 The hub gives each creature a few habits of its own, in `bridge/life.py`:
 it greets you when you come back after 20 minutes away, says good morning
-and goodnight, suggests a break after 50 minutes in front of it, and
+(with how the night went) and goodnight (with how long you were at the desk), suggests a break after 50 minutes in front of it, and
 notices when the room warms up fast. Each shows as a note in the
 creature's Activity and moves its body; none repeats often. Turn it off in
 the app under Settings › Daily life.

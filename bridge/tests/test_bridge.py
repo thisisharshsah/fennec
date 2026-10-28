@@ -28,6 +28,8 @@ class FakeLink(B.Link):
 def store_without_logging(tmp_path):
     s = B.Store()
     s._log = lambda msg: None
+    s.unit_keys = B.security.UnitKeys(path=tmp_path / "unit_keys.json")     # never the real keys
+    s.devices = B.security.Devices(path=tmp_path / "devices.json")
     return s
 
 
@@ -41,9 +43,12 @@ async def test_one_active_link_per_unit_latest_hello_wins(tmp_path):
     serial, wifi = FakeLink(s, "serial"), FakeLink(s, "wifi")
     seen = []
     s.broadcast = lambda m: seen.append(m) or asyncio.sleep(0)
-    await feed(serial, {"type": "hello", "unit": "desk"})
+    await feed(serial, {"type": "hello", "unit": "desk"})          # the hub gives the unit a key over the cable
     await feed(serial, {"type": "state", "t": 1})
-    await feed(wifi, {"type": "hello", "unit": "desk"})          # newer hello takes over
+    key = s.unit_keys.get("desk")
+    import hashlib, hmac
+    auth = hmac.new(key, b"hello|n1|desk", hashlib.sha256).hexdigest()
+    await feed(wifi, {"type": "hello", "unit": "desk", "keyed": True, "nonce": "n1", "auth": auth})   # newer hello takes over
     await feed(serial, {"type": "state", "t": 2})                 # dropped: serial no longer active
     await feed(wifi, {"type": "state", "t": 3})
     states = [m for m in seen if m["type"] == "state"]
@@ -192,3 +197,74 @@ async def test_creature_says_posts_a_notice(tmp_path, monkeypatch):
     monkeypatch.setattr(B, "push_notice", lambda *a: None)
     await B.creature_says(s, "crawl", "Hello there")
     assert any(m.get("name") == "notice" and m.get("kind") == "say" and m.get("text") == "Hello there" for m in seen)
+
+
+def test_day_facts_from_log(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    now = time.time()
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    rows = [
+        {"type": "state", "unit": "crawl", "ts": now - 900, "temp_c": 26.5},
+        {"type": "state", "unit": "crawl", "ts": now - 800, "temp_c": 27.5},
+        {"type": "event", "unit": "crawl", "name": "someone_in_front", "ts": now - 700},
+        {"type": "event", "unit": "crawl", "name": "clap", "ts": now - 650},
+        {"type": "event", "unit": "crawl", "name": "someone_left", "ts": now - 100},
+        {"type": "event", "unit": "other", "name": "clap", "ts": now - 50},
+    ]
+    (data / f"log_{day}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    fake = tmp_path / "bridge" / "bridge.py"
+    fake.parent.mkdir()
+    monkeypatch.setattr(B, "__file__", str(fake))
+    monkeypatch.setattr(B, "RENAMES_FILE", data / "renames.json")
+    f = B.day_facts("crawl", now - 3600, now)
+    assert f == {"present_s": 600, "temp_min": 26.5, "temp_max": 27.5, "loud_events": 1}
+
+
+@pytest.mark.asyncio
+async def test_wifi_hello_without_proof_is_dropped(tmp_path):
+    s = store_without_logging(tmp_path)
+    serial, wifi = FakeLink(s, "serial"), FakeLink(s, "wifi")
+    seen = []
+    s.broadcast = lambda m: seen.append(m) or asyncio.sleep(0)
+    await feed(serial, {"type": "hello", "unit": "desk"})
+    await feed(wifi, {"type": "hello", "unit": "desk", "keyed": False})
+    await feed(wifi, {"type": "event", "name": "clap", "seq": 5})
+    assert not any(m.get("name") == "clap" for m in seen)
+    assert serial.sent[-1]["cmd"] == "set_key" and len(serial.sent[-1]["key"]) == 64
+
+
+def test_eye_pan_follows_the_lens_geometry():
+    assert B.eye_pan(0, 52) == 0
+    assert B.eye_pan(1, 52) == 26 and B.eye_pan(-1, 52) == -26     # the edge of the picture is half the view
+    assert B.eye_pan(-0.5, 52) == -14                               # not half of 26: the lens is not linear
+    assert B.eye_pan(1, 170) == 60                                  # never past the head's limit
+
+
+def test_eye_sightings_become_the_creatures_events():
+    store = B.Store()
+    store.units["crawl"] = {"unit": "crawl", "connected": True, "hello": {"sensors": ["lsm6dsl"]}}
+    seen = B.eye_as_creature_event(store, {"type": "event", "unit": "eye", "name": "person_appeared", "ts": 5.0})
+    assert seen["unit"] == "crawl" and seen["name"] == "someone_in_front" and seen["via"] == "eye"
+    assert "link" not in seen                       # the creature's own link stays as it is in the apps
+    assert B.eye_as_creature_event(store, {"type": "event", "unit": "eye", "name": "looked_at"})["name"] == "looked_at"
+    assert B.eye_as_creature_event(store, {"type": "state", "unit": "eye"}) is None
+
+
+def test_pictures_go_only_to_apps_watching():
+    class WS:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, text):
+            self.sent.append(json.loads(text))
+
+    store = B.Store()
+    watcher, other = WS(), WS()
+    store.clients |= {watcher, other}
+    asyncio.run(B.send_picture(store, {"unit": "eye", "jpeg": "AAAA"}))
+    assert watcher.sent == [] and other.sent == []          # nobody asked: nothing sent
+    store.picture_clients.add(watcher)
+    asyncio.run(B.send_picture(store, {"unit": "eye", "jpeg": "AAAA"}))
+    assert watcher.sent[0]["type"] == "picture" and watcher.sent[0]["jpeg"] == "AAAA"
+    assert other.sent == []

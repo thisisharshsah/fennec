@@ -18,6 +18,29 @@ is given the bridge's address by `setup_unit.py` (the bridge's WebSocket
 hello carries `lan_ip` and `unit_port`); the Wi-Fi module's driver cannot
 listen for a discovery beacon without blocking.
 
+## Security (hub 0.5+)
+
+* Apps on this Mac use plain `ws://127.0.0.1:8777` and are trusted. Apps on the
+  network use `wss://<hub>:8779` with the hub's self-signed certificate
+  (`data/tls/`, EC P-256 named curve) and `Authorization: Bearer <token>`.
+  Bonjour advertises 8779 with TXT `tls=1`.
+* Without a valid token the hub sends only `auth_required` and accepts only
+  `{"cmd":"pair","name":..}`, which succeeds while a 60 s pairing window is open:
+  opened by a short press of the creature's blue button (event `button`) or by
+  a trusted client's `{"cmd":"pair_open"}`. One device per window. The answer
+  `paired` carries the token and the certificate fingerprint, which the app
+  pins. Trusted clients manage devices with `{"cmd":"devices"}` and
+  `{"cmd":"devices","revoke":id}`. The hub stores only token digests.
+* The HTTP ingest (8776) needs a device token unless the caller is on this Mac.
+* Each creature gets a 32 byte key over the USB cable only
+  (`{"cmd":"set_key","key":"<hex>"}`, refused over Wi-Fi). Its Wi-Fi hello
+  carries `keyed`, a per connection `nonce` and `auth` =
+  HMAC-SHA256(key, "hello|" + nonce + "|" + unit); the hub drops any Wi-Fi hello
+  for a known creature that fails this. Every command the hub sends over Wi-Fi is
+  `S <n> <hmac> <json>` with HMAC-SHA256(key, nonce + "|" + n + "|" + json) and n
+  rising within the connection; the creature drops unsigned, forged and replayed
+  lines with an `error` event.
+
 ## Unit to bridge (serial 115200 baud, or a TCP line stream to port 8778)
 
 A unit sends the same lines over both links when both are up; the bridge
@@ -174,6 +197,32 @@ Optional relay for a phone with the app closed: `data/notify.json` with
 `{"ntfy_topic":"<secret topic>","ntfy_server":"https://ntfy.sh"}` makes the
 hub also post every notice to that ntfy topic. Off when the file is absent.
 Notices then pass through the ntfy server, so pick a long random topic.
+
+The eye (test rig, hub 0.5+): `tools/eye` runs on the Mac with a webcam
+beside the creature, finds people and faces with Apple Vision, and posts to
+the HTTP ingest as unit `eye`. Its events become events of the creature
+(`"via":"eye"`): `someone_in_front`, `someone_left`, `looked_at`,
+`looked_away`. A look earns a silent perk (mood and gesture, at most every
+2 minutes), and the hub turns the head toward the person
+(`look_at` from the lens's field of view, `hfov` in the eye's hello).
+
+Five times a second the eye sends an outline, forwarded to apps with `for`
+set to the creature and never logged:
+
+```json
+{"type":"vision","unit":"eye","for":"crawl","people":1,"present":true,"looking":true,
+ "bodies":[[x,y,w,h]],"faces":[[x,y,w,h,1]],"aspect":1.78,"aim":-0.48,"pan":-13,"since":1793138676.1}
+```
+
+Boxes are 0..1 of the picture with the origin at the bottom left. The live
+picture is opt in: `{"cmd":"picture","on":1}` subscribes this app (`0`
+stops; leaving stops too). The eye encodes pictures only while someone is
+subscribed (the hub's answer to each outline says so), and the hub sends
+them to the subscribers only, never logs or keeps them:
+
+```json
+{"type":"picture","unit":"eye","for":"crawl","jpeg":"<base64, 480 wide>","ts":1793138677.2}
+```
 
 Apps to bridge, answered by the hub itself from its log:
 

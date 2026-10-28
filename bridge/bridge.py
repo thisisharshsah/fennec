@@ -15,6 +15,7 @@ import collections
 import datetime as dt
 import json
 import logging
+import math
 import pathlib
 import socket
 import sys
@@ -25,14 +26,17 @@ import serial.tools.list_ports
 import websockets
 
 from life import Life
+from brain import Brain
+import security
 from zeroconf import ServiceInfo
 from zeroconf.asyncio import AsyncZeroconf
 
-BRIDGE_VERSION = "0.4.0"
+BRIDGE_VERSION = "0.5.0"
 QUIET_TIMEOUT_S = 10    # a unit silent this long is disconnected
 LOG_KEEP_DAYS = 14
 UNIT_PORT = 8778        # TCP, units over Wi-Fi
-HTTP_PORT = 8776        # HTTP: POST /event or /state from simple devices (ear chip)
+HTTP_PORT = 8776        # HTTP: POST /event or /state from simple devices (ear chip); token or loopback
+SECURE_PORT = 8779      # TLS WebSocket for apps on the network; plain 8777 listens on this Mac only
 ST_VID = 0x0483
 HISTORY = 200
 log = logging.getLogger("bridge")
@@ -64,10 +68,13 @@ class Store:
     def __init__(self):
         self.lan_ip = "127.0.0.1"
         self.life_hook = None                 # set by main(): the daily-life rules see every message
+        self.devices = security.Devices()
+        self.unit_keys = security.UnitKeys()
         self.links = []                       # every Link ever opened; dead ones are pruned on claim
         self.units = {}                       # name -> {"connected", "last_state", "hello"}
         self.events = collections.deque(maxlen=500)
         self.clients = set()
+        self.picture_clients = set()          # apps that asked for the eye's live picture (cmd "picture")
         self.logfile = None
 
     def unit(self, name):
@@ -116,7 +123,7 @@ class Store:
         self._log(msg)
 
     def _log(self, msg):
-        if msg.get("type") == "audio":        # raw training clips go to the requesting app only
+        if msg.get("type") in ("audio", "vision"):   # raw clips and the eye's live outline are not kept
             return
         day = dt.date.today().isoformat()
         path = pathlib.Path(__file__).resolve().parent.parent / "data" / f"log_{day}.jsonl"
@@ -187,6 +194,7 @@ class Link:
                         self.store.units.pop(old, None)
                         log.info("unit '%s' is now '%s'", old, msg["unit"])
                         remember_rename(old, msg["unit"])
+                        self.store.unit_keys.rename(old, msg["unit"])
                 self.name = msg["unit"]
                 self.store.unit(self.name)["_link"] = None       # a new hello takes over the name
                 log.info("%s link is unit '%s'", self.kind, self.name)
@@ -215,6 +223,28 @@ class Link:
             if msg["acked"] > u.get("_seq", 0):                   # the unit's own record of what was confirmed
                 u["_seq"] = msg["acked"]
                 u["_gaps"] = {x for x in u.get("_gaps", set()) if x > msg["acked"]}
+        if msg.get("type") == "hello" and self.kind == "serial" and msg.get("unit"):
+            unit = msg["unit"]
+            if not msg.get("keyed") or self.store.unit_keys.get(unit) is None:
+                key = self.store.unit_keys.get(unit) or self.store.unit_keys.new(unit)
+                await self.send({"cmd": "set_key", "key": key.hex()})
+                log.info("gave unit '%s' its signing key over the cable", unit)
+        if msg.get("type") == "hello" and self.kind == "wifi" and msg.get("unit"):
+            key = self.store.unit_keys.get(msg["unit"])
+            if key is not None:                          # a known creature must prove it, whatever it claims
+                if not msg.get("keyed") or not security.hello_auth_ok(key, msg.get("nonce", ""), msg["unit"], msg.get("auth")):
+                    log.warning("wifi hello for '%s' from %s failed authentication; dropping it", msg["unit"],
+                                getattr(self, "peer", "?"))
+                    self.reject = True
+                    return
+                if msg.get("nonce", "") != getattr(self, "nonce", None):     # a new connection on the unit's side
+                    self.cmd_n = 0
+                self.nonce, self.signing_key = msg.get("nonce", ""), key
+        if getattr(self, "reject", False):
+            return
+        if msg.get("type") == "event" and msg.get("name") == "button" and not msg.get("late"):
+            self.store.devices.open_window("button")
+            log.info("pairing window open for %ds (button on %s)", security.PAIRING_WINDOW_S, self.name)
         if msg.get("type") == "event":
             seq = msg.get("seq")
             if isinstance(seq, int) and seq > 0:                   # acknowledge only gap-free sequences
@@ -341,6 +371,12 @@ class TcpLink(Link):
     async def _flush_later(self):
         await asyncio.sleep(self.COALESCE_S)
         lines, self.pending = self.pending, []
+        if getattr(self, "signing_key", None):                # a keyed creature only obeys signed lines
+            signed = []
+            for line in lines:
+                self.cmd_n += 1
+                signed.append(security.sign_line(self.signing_key, self.nonce, self.cmd_n, line))
+            lines = signed
         log.debug("wifi tx to %s: %d line(s)", self.name or self.peer, len(lines))
         try:
             self.writer.write(("\n".join(lines) + "\n").encode())
@@ -362,6 +398,8 @@ class TcpLink(Link):
                 if not raw:
                     break
                 await self._handle(raw)
+                if getattr(self, "reject", False):
+                    break
         except (ConnectionError, OSError) as e:
             log.warning("wifi unit %s lost: %s", self.name or self.peer, e)
         finally:
@@ -378,6 +416,8 @@ class HttpUnits:
          POST /event  {"unit":"ear","name":"heard","label":"creature","score":0.9}
          POST /state  {"unit":"ear","sound_db":41}
          POST /hello  {"unit":"ear","fw":"esphome","sensors":["mic"]}
+         POST /vision {"unit":"eye","bodies":[[x,y,w,h]],...}   live outline for the apps, not logged
+         POST /picture {"unit":"eye","jpeg":"<base64>"}         live picture, only to apps watching, never kept
        Each device appears as a unit with link "http"."""
 
     def __init__(self, store):
@@ -390,14 +430,23 @@ class HttpUnits:
             lines = head.decode("latin1").split("\r\n")
             method, path, *_ = lines[0].split(" ")
             length = 0
+            headers = {}
             for h in lines[1:]:
+                if ":" in h:
+                    k, v = h.split(":", 1)
+                    headers[k.strip()] = v.strip()
                 if h.lower().startswith("content-length:"):
                     length = int(h.split(":", 1)[1])
             body = await asyncio.wait_for(reader.readexactly(length), 5) if length else b""
-            status, reply = await self._dispatch(method, path, body)
+            peer = (writer.get_extra_info("peername") or ("", 0))[0]
+            if not security.is_loopback(peer) and not self.store.devices.check(security.bearer(headers)):
+                status, reply = 401, json.dumps({"error": "pair this device first (token required)"})
+            else:
+                status, reply = await self._dispatch(method, path, body)
         except Exception as e:  # noqa: BLE001
             status, reply = 400, json.dumps({"error": str(e)})
-        text = f"HTTP/1.1 {status} {'OK' if status == 200 else 'Bad Request'}\r\nContent-Type: application/json\r\nContent-Length: {len(reply)}\r\nConnection: close\r\n\r\n{reply}"
+        reason = {200: "OK", 401: "Unauthorized", 404: "Not Found"}.get(status, "Bad Request")
+        text = f"HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {len(reply)}\r\nConnection: close\r\n\r\n{reply}"
         writer.write(text.encode())
         try:
             await writer.drain()
@@ -405,9 +454,12 @@ class HttpUnits:
             writer.close()
 
     async def _dispatch(self, method, path, body):
-        if method != "POST" or path not in ("/event", "/state", "/hello"):
-            return 404, json.dumps({"error": "POST /event, /state or /hello"})
+        if method != "POST" or path not in ("/event", "/state", "/hello", "/vision", "/picture"):
+            return 404, json.dumps({"error": "POST /event, /state, /hello, /vision or /picture"})
         msg = json.loads(body or b"{}")
+        if path == "/picture":
+            await send_picture(self.store, msg)
+            return 200, json.dumps({"ok": True, "watching": len(self.store.picture_clients)})
         unit = msg.pop("unit", None) or "http-device"
         link = self.links.get(unit)
         if link is None:
@@ -419,8 +471,13 @@ class HttpUnits:
         else:
             msg = dict(msg, type=kind)
             msg.setdefault("t", int(time.time() * 1000) % 1000000000)
+            if kind == "vision":
+                msg["for"] = body_unit(self.store)       # the creature whose eye this stands in for
         await link.deliver(msg)
-        return 200, json.dumps({"ok": True, "unit": unit})
+        reply = {"ok": True, "unit": unit}
+        if kind == "vision":
+            reply["picture"] = bool(self.store.picture_clients)   # the eye encodes pictures only while someone watches
+        return 200, json.dumps(reply)
 
 
 class HttpLink(Link):
@@ -436,6 +493,20 @@ class HttpLink(Link):
         if msg.get("type") == "hello":
             self.store.unit(self.name)["_link"] = None
         await self._handle(json.dumps(msg).encode())
+
+
+async def send_picture(store, msg):
+    """The eye's live picture: straight to the apps that asked for it. Not broadcast, not logged, not kept."""
+    jpeg = msg.get("jpeg")
+    if not isinstance(jpeg, str) or not store.picture_clients:
+        return
+    text = json.dumps({"type": "picture", "unit": msg.get("unit", "eye"), "for": body_unit(store),
+                       "jpeg": jpeg, "ts": time.time()})
+    for ws in list(store.picture_clients):
+        try:
+            await ws.send(text)
+        except Exception:
+            store.picture_clients.discard(ws)
 
 
 def body_unit(store):
@@ -605,9 +676,45 @@ async def answer_series(ws, msg):
                               "request": msg.get("request"), "points": points}))
 
 
+async def untrusted_session(ws, store):
+    """A network client without a valid token: it may only pair, and only while the window is open."""
+    await ws.send(json.dumps({"type": "auth_required", "pairing_open": store.devices.window_open(),
+                              "fingerprint": security.certificate_fingerprint()}))
+    async for text in ws:
+        try:
+            msg = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if msg.get("cmd") == "pair":
+            result = store.devices.pair(msg.get("name", "device"), msg.get("kind", "app"))
+            if result:
+                device_id, token = result
+                log.info("paired new device %s (%s)", device_id, msg.get("name"))
+                await ws.send(json.dumps({"type": "paired", "device_id": device_id, "token": token,
+                                          "fingerprint": security.certificate_fingerprint()}))
+                await store.broadcast({"type": "event", "unit": "hub", "link": "hub", "name": "device_paired",
+                                       "text": str(msg.get("name", "device"))[:60], "t": 0, "ts": time.time()})
+            else:
+                await ws.send(json.dumps({"type": "pair_refused",
+                                          "reason": "Press the blue button on your creature, then try again within a minute."}))
+        else:
+            await ws.send(json.dumps({"type": "auth_required", "pairing_open": store.devices.window_open()}))
+
+
 async def ws_handler(ws, store, serial_link):
+    peer = (ws.remote_address or ("", 0))[0]
+    device = None
+    if not security.is_loopback(peer):
+        device = store.devices.check(security.bearer(ws.request.headers))
+        if device is None:
+            log.info("unpaired client from %s", peer)
+            try:
+                await untrusted_session(ws, store)
+            except websockets.ConnectionClosed:
+                pass
+            return
     store.clients.add(ws)
-    log.info("app connected (%d)", len(store.clients))
+    log.info("app connected (%d)%s", len(store.clients), f" device {device['name']}" if device else " local")
     try:
         await ws.send(json.dumps(store.hello_message()))
         await ws.send(json.dumps(store.history_message()))
@@ -618,6 +725,13 @@ async def ws_handler(ws, store, serial_link):
                 continue
             if msg.get("cmd") == "series":                   # answered by the hub from its log, not sent to a unit
                 await answer_series(ws, msg)
+            elif msg.get("cmd") == "pair_open":              # a trusted client approves pairing a new device
+                until = store.devices.open_window("app")
+                await ws.send(json.dumps({"type": "pairing", "open_until": until}))
+            elif msg.get("cmd") == "devices":                # paired devices: list, or revoke one
+                if msg.get("revoke"):
+                    store.devices.revoke(msg["revoke"])
+                await ws.send(json.dumps({"type": "devices", "items": store.devices.list()}))
             elif msg.get("cmd") == "messages":               # conversation history from the log
                 await answer_messages(ws, msg)
             elif msg.get("cmd") == "say":                    # the creature "says" something: a notice on the phone
@@ -625,8 +739,22 @@ async def ws_handler(ws, store, serial_link):
             elif msg.get("cmd") == "reply":                  # the owner answered a notification: like speech to the creature
                 text = str(msg.get("text", "")).strip()[:300]
                 if text:
-                    await store.broadcast({"type": "event", "unit": msg.get("unit") or "phone", "link": "hub",
+                    unit = msg.get("unit") or "phone"
+                    await store.broadcast({"type": "event", "unit": unit, "link": "hub",
                                            "name": "speech", "text": text, "via": "notification", "t": 0, "ts": time.time()})
+                    asyncio.create_task(creature_answers(store, unit))
+            elif msg.get("cmd") == "brain":                  # the creature's answering brain: status, on or off, daily cap
+                brain = getattr(store, "brain", None)
+                cap = msg.get("daily_cap_usd", msg.get("dailyCapUsd"))
+                if brain is not None and ("on" in msg or cap is not None):
+                    brain.configure(enabled=msg.get("on"), daily_cap_usd=cap)
+                await ws.send(json.dumps(dict({"type": "brain"}, **(brain.status() if brain else {}))))
+            elif msg.get("cmd") == "picture":                # this app wants the eye's live picture, or no longer
+                if msg.get("on"):
+                    store.picture_clients.add(ws)
+                else:
+                    store.picture_clients.discard(ws)
+                log.info("live picture: %d watching", len(store.picture_clients))
             elif msg.get("cmd") == "life":                   # daily-life rules on or off, kept across restarts
                 life = getattr(store, "life", None)
                 if life is not None and "on" in msg:
@@ -639,6 +767,7 @@ async def ws_handler(ws, store, serial_link):
         pass
     finally:
         store.clients.discard(ws)
+        store.picture_clients.discard(ws)
         log.info("app left (%d)", len(store.clients))
 
 
@@ -649,7 +778,7 @@ async def register_bonjour(port):
         "_roomcreature._tcp.local.",
         f"{socket.gethostname().split('.')[0]}._roomcreature._tcp.local.",
         addresses=[socket.inet_aton(ip)], port=port,
-        properties={"version": BRIDGE_VERSION},
+        properties={"version": BRIDGE_VERSION, "tls": "1"},
     )
     try:
         await asyncio.wait_for(zc.async_register_service(info), 5)
@@ -659,6 +788,47 @@ async def register_bonjour(port):
 
 
 LIFE_FILE = pathlib.Path(__file__).resolve().parent.parent / "data" / "life.json"
+
+
+def day_facts(unit, since, until):
+    """What the log says about a stretch of time, for the creature's daily recaps:
+    seconds someone was in front of it, temperature range, loud moments."""
+    data = pathlib.Path(__file__).resolve().parent.parent / "data"
+    keys = [f'"unit": "{n}"' for n in names_for(unit)]
+    temps, loud, spans, start = [], 0, 0.0, None
+    for f in sorted(data.glob("log_*.jsonl")):
+        try:
+            day = time.mktime(time.strptime(f.stem[4:], "%Y-%m-%d"))
+        except ValueError:
+            continue
+        if day + 86400 < since or day > until:
+            continue
+        with open(f) as fh:
+            for line in fh:
+                if not any(k in line for k in keys):
+                    continue
+                try:
+                    m = json.loads(line)
+                except ValueError:
+                    continue
+                ts = m.get("ts", 0)
+                if not since <= ts <= until or m.get("late"):
+                    continue
+                if m.get("type") == "state" and m.get("temp_c") is not None:
+                    temps.append(m["temp_c"])
+                elif m.get("type") == "event":
+                    name = m.get("name")
+                    if name in ("clap", "knock", "sound_started"):
+                        loud += 1
+                    elif name == "someone_in_front" and start is None:
+                        start = ts
+                    elif name == "someone_left" and start is not None:
+                        spans += ts - start
+                        start = None
+    if start is not None:
+        spans += until - start
+    return {"present_s": spans, "temp_min": min(temps) if temps else None,
+            "temp_max": max(temps) if temps else None, "loud_events": loud}
 
 
 NOTIFY_FILE = pathlib.Path(__file__).resolve().parent.parent / "data" / "notify.json"
@@ -697,11 +867,97 @@ async def post_notice(store, unit, kind, text):
     asyncio.get_running_loop().run_in_executor(None, push_notice, unit, kind, text)
 
 
+def describe_room(store, unit):
+    """A few plain lines the creature's brain gets with every message: what its sensors say now."""
+    u = store.units.get(unit) or {}
+    s = u.get("last_state") or {}
+    lines = []
+    if s.get("temp_c") is not None:
+        lines.append(f"temperature {s['temp_c']:.1f} C, humidity {s.get('hum_pct', 0):.0f} %")
+    if s.get("sound_db") is not None:
+        lines.append(f"sound level {s['sound_db']:.0f} dB (quiet room is about 30)")
+    body = s.get("body") or {}
+    if body.get("mood"):
+        lines.append(f"your mood: {body['mood']}")
+    now = time.time()
+    recent = [e for e in store.events if e.get("unit") == unit and now - e.get("ts", 0) < 2 * 3600]
+    presence = next((e for e in reversed(recent) if e.get("name") in ("someone_in_front", "someone_left")), None)
+    if presence:
+        mins = int((now - presence["ts"]) // 60)
+        lines.append(("someone is in front of you" if presence["name"] == "someone_in_front" else "nobody in front of you")
+                     + f" (since {mins} min ago)")
+    look = next((e for e in reversed(recent) if e.get("name") in ("looked_at", "looked_away")), None)
+    if look and look["name"] == "looked_at" and presence and presence["name"] == "someone_in_front":
+        lines.append("they are looking at you right now")
+    counts = {}
+    for e in recent:
+        if e.get("name") in ("clap", "knock", "moved", "picked_up", "shaken", "someone_in_front", "looked_at"):
+            counts[e["name"]] = counts.get(e["name"], 0) + 1
+    if counts:
+        lines.append("last 2 hours: " + ", ".join(f"{v} x {k.replace('_', ' ')}" for k, v in sorted(counts.items())))
+    return "\n".join(lines) or "no readings yet"
+
+
+async def creature_answers(store, unit):
+    """After the owner wrote to the creature: let the brain answer, as the creature."""
+    brain = getattr(store, "brain", None)
+    if brain is None:
+        return
+    loop = asyncio.get_running_loop()
+    history = await loop.run_in_executor(None, read_messages, time.time() - 2 * 86400, time.time() + 1, unit)
+    text = await brain.answer(unit, history, describe_room(store, unit))
+    if text:
+        await creature_says(store, unit, text[:300])
+
+
 async def creature_says(store, unit, text):
     if not text:
         return
     await route_command(store, {"cmd": "chirp", "unit": unit, "name": "hello"})   # silent until a speaker is fitted
     await post_notice(store, unit, "say", text)
+
+
+EYE_FOV_DEG = 60           # the eye's horizontal field of view, when its hello does not say
+EYE_MIN_STEP_DEG = 8
+EYE_MIN_GAP_S = 2.0
+_eye_last = {"pan": None, "at": 0.0}
+
+
+def eye_pan(x, fov_deg):
+    """Head turn toward a person at x (-1 left .. +1 right of the picture), for a camera beside the head."""
+    half = math.radians(fov_deg) / 2
+    return max(-60, min(60, round(math.degrees(math.atan(float(x) * math.tan(half))))))
+
+
+async def eye_follow(store, msg):
+    """The test-rig eye (a camera on the Mac) sees a person: turn the creature's head toward them."""
+    if msg.get("type") != "state" or not msg.get("people") or msg.get("x") is None:
+        return
+    unit = body_unit(store)
+    if not unit:
+        return
+    fov = ((store.units.get(msg.get("unit")) or {}).get("hello") or {}).get("hfov") or EYE_FOV_DEG
+    pan = eye_pan(msg["x"], fov)
+    now = time.time()
+    last = _eye_last["pan"]
+    if (last is None or abs(pan - last) >= EYE_MIN_STEP_DEG) and now - _eye_last["at"] >= EYE_MIN_GAP_S:
+        _eye_last.update(pan=pan, at=now)
+        await route_command(store, {"cmd": "look_at", "unit": unit, "pan": pan, "tilt": 5 if msg.get("facing") else 0})
+
+
+EYE_EVENTS = {"person_appeared": "someone_in_front", "person_left": "someone_left",
+              "looked_at": "looked_at", "looked_away": "looked_away"}
+
+
+def eye_as_creature_event(store, msg):
+    """What the eye saw, as an event of the creature it stands in for (its Activity, daily life, the agent)."""
+    if msg.get("type") != "event" or msg.get("name") not in EYE_EVENTS:
+        return None
+    unit = body_unit(store)
+    if not unit:
+        return None
+    return {"type": "event", "unit": unit, "name": EYE_EVENTS[msg["name"]], "via": "eye",
+            "t": msg.get("t", 0), "ts": msg.get("ts", time.time())}
 
 
 async def run_life(store, life, actions, notices):
@@ -763,7 +1019,7 @@ async def main():
 
     store = Store()
     serial_link = SerialLink(store, args.port, args.baud)
-    zc, ip = await register_bonjour(args.ws_port)
+    zc, ip = await register_bonjour(SECURE_PORT)
     store.lan_ip = ip
 
     async def on_unit(reader, writer):
@@ -772,15 +1028,27 @@ async def main():
     tcp_server = await asyncio.start_server(on_unit, "0.0.0.0", UNIT_PORT)
     http_units = HttpUnits(store)
     http_server = await asyncio.start_server(http_units.handle, "0.0.0.0", HTTP_PORT)
-    async with websockets.serve(lambda ws: ws_handler(ws, store, serial_link), "0.0.0.0", args.ws_port), tcp_server, http_server:
+    tls = security.server_context()
+    log.info("hub certificate sha256 %s", security.certificate_fingerprint())
+    handler = lambda ws: ws_handler(ws, store, serial_link)
+    async with websockets.serve(handler, "127.0.0.1", args.ws_port), \
+            websockets.serve(handler, "0.0.0.0", SECURE_PORT, ssl=tls), tcp_server, http_server:
         log.info("bridge %s  apps: ws://%s:%d/  units: tcp %s:%d, http://%s:%d/event", BRIDGE_VERSION, ip, args.ws_port, ip, UNIT_PORT, ip, HTTP_PORT)
         keeper = asyncio.create_task(housekeeping(store))
-        life = Life()
+        life = Life(facts=day_facts)
         life.enabled = load_life_enabled()
         store.life = life
+        store.brain = Brain(log)
+        log.info("brain: %s", store.brain.status())
 
         async def hook(msg):
             try:
+                if "vision-person" in ((store.units.get(msg.get("unit")) or {}).get("hello") or {}).get("sensors", []):
+                    await eye_follow(store, msg)
+                    seen = eye_as_creature_event(store, msg)
+                    if seen:
+                        await store.broadcast(seen)            # comes back through this hook as the creature's
+                    return                                     # the eye has no body: the rules act on the creature
                 await run_life(store, life, *life.observe(msg))
             except Exception as e:
                 log.warning("life rule failed: %s", e)

@@ -66,3 +66,6 @@ ear/.esphome/
 
 # Logs
 *.log
+
+# Compiled test tools
+tools/eye/eye

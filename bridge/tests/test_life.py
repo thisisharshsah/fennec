@@ -111,3 +111,38 @@ def test_good_morning_after_the_night():
 def test_hub_notices_do_not_feed_back():
     life, _ = make(dt.datetime(2026, 10, 27, 14, 0))
     assert life.observe({"type": "event", "unit": "crawl", "name": "someone_in_front", "link": "hub"}) == ([], [])
+
+
+def test_morning_and_goodnight_carry_recaps():
+    clock = Clock(dt.datetime(2026, 10, 27, 23, 0))
+    facts = lambda unit, since, until: {"present_s": 3 * 3600 + 600, "temp_min": 26.8, "temp_max": 27.8, "loud_events": 0}
+    life = L.Life(clock=clock, facts=facts)
+    life.observe(state(sound_db=30.0))
+    for _ in range(11):
+        clock.advance(60)
+        life.observe(state(sound_db=30.5))
+    _, notices = life.tick()
+    assert notices[0][2] == "Goodnight. Today you spent 3 h 10 min at the desk with me. The room is quiet now."
+    clock.t = dt.datetime(2026, 10, 28, 7, 30).timestamp()
+    _, notices = life.observe(ev("someone_in_front"))
+    assert notices[0][2] == "Good morning. Overnight it was 27° to 28°, and quiet all night."
+
+
+def test_recap_failure_keeps_the_greeting():
+    def broken(*_):
+        raise OSError("no log")
+    life, clock = make(dt.datetime(2026, 10, 28, 7, 30))
+    life.facts = broken
+    _, notices = life.observe(ev("someone_in_front"))
+    assert notices[0][2] == "Good morning."
+
+
+def test_a_look_earns_a_silent_perk_with_cooldown():
+    life, clock = make(dt.datetime(2026, 10, 27, 14, 0))
+    actions, notices = life.observe(ev("looked_at"))
+    assert notices == [] and ("crawl", {"cmd": "gesture", "name": "perk"}) in actions
+    assert not any(cmd["cmd"] == "chirp" for _, cmd in actions)
+    clock.advance(60)
+    assert life.observe(ev("looked_at")) == ([], [])
+    clock.advance(61)
+    assert life.observe(ev("looked_at"))[0]
