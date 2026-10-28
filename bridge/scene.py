@@ -33,6 +33,7 @@ SETTLE_S = 8
 STRETCH_SHOWS_S = 20
 FRESH_S = 10                     # an outline older than this means the eye stopped
 HINT_S = 45                      # a description's hints count this long (descriptions come every ~20 s)
+CORRECTED_S = 90                 # after the owner says what they are doing, believe them this long
 NOBODY_S = 25                    # "nobody is at the desk" overrules a shaky body detection until the next one
 NOTE_FRESH_S = 90
 HINT_WORDS = {                   # words in the model's sentence -> a hint
@@ -62,6 +63,7 @@ class Scene:
         self.note_at = float("-inf")
         self._hints = {}                  # hint -> when it was last confirmed
         self._recent = collections.deque(maxlen=3)   # the hints of the last three sentences
+        self._corrected = None            # (activity, until): what the owner said they are doing
 
     def describe(self, text):
         """The local model's sentence about the scene. Returns the hints found in it."""
@@ -107,12 +109,36 @@ class Scene:
         # facing the camera is not an activity: beside a screen it looks the same as working
         return "working"
 
+    def correct(self, right=None, description_wrong=False):
+        """The owner says the scene is wrong. Returns what the eye knew at that moment, for tuning:
+        the activity it showed, the outline's facts, the model's last sentence and hints."""
+        now = self.clock()
+        v = self.view
+        record = {"wrong": self.activity, "right": right, "description_wrong": bool(description_wrong),
+                  "for_s": round(now - self.since) if self.since else None,
+                  "description": self.note if now - self.note_at < NOTE_FRESH_S else None,
+                  "hints": sorted(self.hints(now)),
+                  "seen": {k: v.get(k) for k in ("people", "present", "looking", "posture", "tired", "things", "sign")},
+                  "faces": len(v.get("faces") or []), "hands": len(v.get("hands") or []),
+                  "bodies": len(v.get("bodies") or [])}
+        if description_wrong:                       # the model's words stop counting
+            self._hints.clear()
+            self._recent.clear()
+        if right in LABELS:
+            self._hints.clear()
+            self._corrected = (right, now + CORRECTED_S)
+            self.activity, self.since, self._candidate = right, now, None
+        return record
+
     def update(self, outline):
         """Feed one outline from the eye. Returns the new activity when it changed, else None."""
         now = self.clock()
         self.view, self.view_at = outline, now
         if outline.get("sign") == "stretched":
             self._stretched_at = now
+        if self._corrected and now < self._corrected[1]:
+            return None                              # the owner said what is going on: hold it a while
+        self._corrected = None
         guess = self.guess(outline, now)
         if guess == self.activity:
             self._candidate = None

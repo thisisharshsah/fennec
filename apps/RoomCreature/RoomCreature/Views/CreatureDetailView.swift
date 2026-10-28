@@ -192,7 +192,7 @@ struct CreatureDetailView: View {
     }
 
     /// Plumbing, not things that happened in the room.
-    static let internalEvents: Set<String> = ["wifi_cmd", "error", "setup", "journal", "ack", "activity", "described"]
+    static let internalEvents: Set<String> = ["wifi_cmd", "error", "setup", "journal", "ack", "activity", "described", "correction"]
 
     // MARK: Chat
 

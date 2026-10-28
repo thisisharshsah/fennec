@@ -26,6 +26,8 @@ struct BridgeCommand: Encodable, Sendable {
     var describe: Int?
     var away: Int?
     var checkin: Int?
+    var right: String?
+    var descriptionWrong: Int?
 
     static func express(_ mood: Mood, unit: String) -> BridgeCommand {
         BridgeCommand(cmd: "express", unit: unit, mood: mood.rawValue)
@@ -120,6 +122,11 @@ struct BridgeCommand: Encodable, Sendable {
     /// Turns the local model that describes the scene on or off (it runs only while the eye does).
     static func eyeDescribes(_ on: Bool) -> BridgeCommand {
         BridgeCommand(cmd: "eye", unit: "", describe: on ? 1 : 0)
+    }
+
+    /// The owner says what they are really doing, or that the camera's sentence is wrong.
+    static func correct(right: String? = nil, descriptionWrong: Bool = false) -> BridgeCommand {
+        BridgeCommand(cmd: "correct", unit: "", right: right, descriptionWrong: descriptionWrong ? 1 : nil)
     }
 
     /// The safety watch: away mode, and checking on the owner when they are slumped and still.

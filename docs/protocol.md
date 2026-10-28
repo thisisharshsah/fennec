@@ -250,6 +250,12 @@ templates otherwise: `{"type":"event","name":"thought","text":"...","via":"brain
 `{"cmd":"messages"}` returns them with `"kind":"thought"`; they never notify
 and are not turns in the brain's conversation.
 
+Corrections: `{"cmd":"correct","right":"working"}` (one of the activity
+names) or `{"cmd":"correct","description_wrong":1}`. The scene takes the
+owner's word for 90 s and drops the model's hints; the hub logs
+`{"name":"correction","wrong":"on_call","right":"working","description":"...","hints":[...],"seen":{...},"faces":1,"hands":0,"bodies":1}`
+as tuning data, and a new `activity` event with `"via":"owner"`.
+
 When the eye runs: `{"cmd":"eye","mode":"off|auto|on"}`. The hub starts and
 stops the eye program itself (auto: while the creature's own distance sensor
 feels someone, and two minutes after), keeps the mode in data/eye.json, puts

@@ -114,3 +114,28 @@ def test_guesses_after_possibly_are_not_hints():
     assert scene.describe("The person is eating something at the desk.") == []
     assert scene.describe("The person eats a sandwich.") == ["food"]
     assert scene.describe("The person appears to be on a video call.") == []
+
+
+def test_a_correction_is_believed_and_recorded():
+    clock = Clock()
+    scene = S.Scene(clock=clock)
+    scene.describe("The person is on a video call.")
+    scene.describe("The person is on a video call.")
+    run(scene, clock, here(faces=[[0.4, 0.5, 0.1, 0.15, 1]]), 10)
+    assert scene.activity == "on_call"
+    record = scene.correct("working")
+    assert record["wrong"] == "on_call" and record["right"] == "working" and record["hints"] == ["call"]
+    assert record["faces"] == 1 and record["seen"]["present"] is True
+    assert scene.activity == "working"
+    assert run(scene, clock, here(), 60) == []                         # held, and the call hint is gone
+    clock.t += S.CORRECTED_S
+    assert run(scene, clock, here(things=["phone"]), 10) == ["on_phone"]   # then the eye decides again
+
+
+def test_marking_the_sentence_wrong_drops_its_hints():
+    scene = S.Scene(clock=Clock())
+    scene.describe("The person is writing on paper.")
+    scene.describe("The person writes on paper.")
+    assert "writing" in scene.hints(scene.clock())
+    record = scene.correct(description_wrong=True)
+    assert record["description_wrong"] and not scene.hints(scene.clock())

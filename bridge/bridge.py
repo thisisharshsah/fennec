@@ -781,6 +781,9 @@ async def ws_handler(ws, store, serial_link):
                 store.safety.configure(away=msg.get("away"), checkin=msg.get("checkin"))
                 log.info("safety: away %s, check-in %s", store.safety.away, store.safety.checkin)
                 await send_to_apps(store, store.safety.status())
+            elif msg.get("cmd") == "correct":                # the owner says the eye got it wrong
+                await scene_corrected(store, msg.get("right"),
+                                      bool(msg.get("description_wrong") or msg.get("descriptionWrong")))
             elif msg.get("cmd") == "snapshot" and device is None:   # one picture, for the describer on this Mac
                 store.picture_once.add(ws)
             elif msg.get("cmd") == "described" and device is None:  # the local model's sentence about the scene
@@ -1024,6 +1027,22 @@ async def follow_scene(store, msg):
     if changed and unit:
         await store.broadcast({"type": "event", "unit": unit, "name": "activity", "activity": changed,
                                "text": ACTIVITY_LABELS[changed], "via": "eye", "t": 0, "ts": time.time()})
+
+
+async def scene_corrected(store, right, description_wrong):
+    """Log what the eye knew when the owner corrected it (tuning data), and show the right activity."""
+    unit = body_unit(store)
+    if not unit or (right is None and not description_wrong):
+        return
+    right = right if right in ACTIVITY_LABELS else None
+    record = store.scene.correct(right, description_wrong)
+    log.info("correction: %s", record)
+    now = time.time()
+    await store.broadcast(dict({"type": "event", "unit": unit, "link": "hub", "name": "correction", "t": 0, "ts": now},
+                               **record))
+    if right:
+        await store.broadcast({"type": "event", "unit": unit, "name": "activity", "activity": right,
+                               "text": ACTIVITY_LABELS[right], "via": "owner", "t": 0, "ts": now})
 
 
 async def scene_described(store, text, seconds=None):

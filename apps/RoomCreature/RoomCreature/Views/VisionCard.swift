@@ -93,8 +93,54 @@ struct VisionCard: View {
                 .foregroundStyle(Theme.textSecondary)
                 .monospacedDigit()
             Spacer(minLength: 0)
+            correctionMenu
         }
-        .accessibilityElement(children: .combine)
+    }
+
+    /// What the owner can be doing, as the hub names it (bridge/scene.py).
+    private static let activities: [(key: String, title: String, symbol: String)] = [
+        ("working", "Working at the desk", "laptopcomputer"),
+        ("on_phone", "On my phone", "iphone"),
+        ("on_call", "On a video call", "video.fill"),
+        ("reading", "Reading", "book.fill"),
+        ("writing", "Writing on paper", "pencil.and.scribble"),
+        ("drinking", "Having a drink", "cup.and.saucer.fill"),
+        ("eating", "Eating", "fork.knife"),
+        ("watching", "Watching a video", "play.rectangle.fill"),
+        ("gaming", "Playing a game", "gamecontroller.fill"),
+        ("stretching", "Stretching", "figure.arms.open"),
+        ("with_someone", "With someone", "person.2.fill"),
+        ("away", "Not at the desk", "person.fill.xmark"),
+    ]
+
+    /// "Wrong?": say what is really going on. Each correction is kept with what the eye saw, for tuning.
+    private var correctionMenu: some View {
+        Menu {
+            Section("I'm actually…") {
+                ForEach(Self.activities, id: \.key) { item in
+                    Button { send(.correct(right: item.key)) } label: { Label(item.title, systemImage: item.symbol) }
+                }
+            }
+            if description != nil {
+                Button(role: .destructive) { send(.correct(descriptionWrong: true)) } label: {
+                    Label("The description is wrong", systemImage: "text.badge.xmark")
+                }
+            }
+        } label: {
+            Text("Wrong?")
+                .font(Theme.Text.chip)
+                .foregroundStyle(Theme.textSecondary)
+                .padding(.horizontal, Theme.Spacing.m)
+                .padding(.vertical, Theme.Spacing.xs)
+                .background(Theme.surfaceElevated, in: Capsule())
+        }
+        .disabled(!model.isHubConnected)
+        .accessibilityLabel("Correct what \(name) thinks you are doing")
+    }
+
+    private func send(_ command: BridgeCommand) {
+        Haptics.light()
+        model.client.send(command)
     }
 
     private static func activitySymbol(_ label: String?) -> String {
