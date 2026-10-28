@@ -3,7 +3,7 @@
 MCP server (stdio) that gives an agent the room's senses.
 
 It is a WebSocket client of bridge.py; if no bridge is running it starts one.
-Tools: units, room_state, recent_events, wait_for_event, send_command.
+Tools: units, room_state, recent_events, wait_for_event, send_command, whats_happening and more.
 """
 import asyncio
 import collections
@@ -24,6 +24,8 @@ mcp = MCPServer("fennec", instructions="Senses of a small desk unit in the user'
 
 units = {}
 events = collections.deque(maxlen=500)
+vision = {}                                       # the eye's latest outline, by creature
+eye_status = {}
 event_seen = asyncio.Event()
 connected = False
 outgoing = asyncio.Queue()
@@ -78,6 +80,12 @@ def _ingest(msg):
         event_seen.set()
     elif kind == "unit_status":
         units.setdefault(msg["unit"], {"unit": msg["unit"]})["connected"] = msg["connected"]
+    elif kind == "vision" and msg.get("for"):
+        vision[msg["for"]] = dict(msg, received=time.time())
+    elif kind == "eye":
+        eye_status.update({k: v for k, v in msg.items() if k != "type"})
+    if kind == "hello" and msg.get("eye"):
+        eye_status.update(msg["eye"])
 
 
 def _age(msg):
@@ -197,6 +205,41 @@ def _log_rows(since):
                 if r.get("ts", 0) >= since:
                     rows.append(r)
     return rows
+
+
+@mcp.tool()
+def whats_happening(unit: str = "") -> dict:
+    """What the owner is doing right now, through the camera eye: one activity (working at the desk,
+    on the phone, having a drink, eating, reading, stretching, paying attention to the creature,
+    with someone, away) and how long it has lasted, with posture, tiredness, things in hand and
+    whether they are looking at the creature. Also today's minutes per activity, stretches and
+    minutes spent hunched over. Facts only: no pictures."""
+    if not unit:
+        unit = next((u for u, v in units.items() if "lsm6dsl" in ((v.get("hello") or {}).get("sensors") or [])), "")
+    if not unit:
+        return {"error": "no creature known yet"}
+    out = {"unit": unit, "eye": eye_status or {"mode": "unknown"}}
+    latest = next((e for e in reversed(events) if e.get("unit") == unit and e.get("name") == "activity"), None)
+    v = vision.get(unit)
+    fresh = v is not None and time.time() - v["received"] < 10
+    if latest and fresh:
+        out["now"] = {"activity": latest.get("activity"), "label": latest.get("text"),
+                      "minutes": round((time.time() - latest.get("ts", time.time())) / 60, 1),
+                      "people": v.get("people", 0), "looking_at_creature": bool(v.get("looking"))}
+        for key in ("posture", "tired", "things"):
+            if v.get(key):
+                out["now"][key] = v[key]
+    else:
+        out["now"] = None
+        out["why"] = "the eye is off or not sending" if not fresh else "no activity seen yet"
+    sys.path.insert(0, str(HERE))
+    from bridge import day_facts                   # the hub's own count from the log
+    midnight = time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1))
+    f = day_facts(unit, midnight, time.time())
+    out["today"] = {"minutes_by_activity": {k: round(s / 60) for k, s in f["activities"].items() if s >= 60},
+                    "stretches": f["stretches"], "minutes_hunched": round(f["slouched_s"] / 60),
+                    "minutes_at_desk": round(f["present_s"] / 60)}
+    return out
 
 
 @mcp.tool()

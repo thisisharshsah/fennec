@@ -218,7 +218,8 @@ def test_day_facts_from_log(tmp_path, monkeypatch):
     monkeypatch.setattr(B, "__file__", str(fake))
     monkeypatch.setattr(B, "RENAMES_FILE", data / "renames.json")
     f = B.day_facts("crawl", now - 3600, now)
-    assert f == {"present_s": 600, "temp_min": 26.5, "temp_max": 27.5, "loud_events": 1}
+    assert {k: f[k] for k in ("present_s", "temp_min", "temp_max", "loud_events")} == \
+        {"present_s": 600, "temp_min": 26.5, "temp_max": 27.5, "loud_events": 1}
 
 
 @pytest.mark.asyncio
@@ -295,3 +296,32 @@ def test_a_nod_without_a_question_is_ignored():
     assert B.eye_as_creature_event(store, {"type": "event", "unit": "eye", "name": "nodded"}) is None
     store.events.append({"type": "event", "unit": "crawl", "name": "notice", "kind": "break", "ts": time.time() - 30})
     assert B.eye_as_creature_event(store, {"type": "event", "unit": "eye", "name": "nodded"})["name"] == "nodded"
+
+
+def test_day_facts_count_activities_stretches_and_slouching(tmp_path, monkeypatch):
+    day = time.strftime("%Y-%m-%d")
+    base = time.mktime(time.strptime(day, "%Y-%m-%d")) + 9 * 3600
+    rows = [("activity", 0, {"activity": "working"}), ("slouching", 600, {}), ("activity", 1800, {"activity": "on_phone"}),
+            ("sat_up", 2400, {}), ("stretched", 2700, {}), ("activity", 3000, {"activity": "working"})]
+    data = tmp_path / "data"
+    data.mkdir()
+    with open(data / f"log_{day}.jsonl", "w") as f:
+        for name, at, extra in rows:
+            f.write(json.dumps(dict({"type": "event", "unit": "crawl", "name": name, "ts": base + at}, **extra)) + "\n")
+    monkeypatch.setattr(B.pathlib.Path, "resolve", lambda self: tmp_path / "bridge" / "bridge.py")
+    facts = B.day_facts("crawl", base, base + 3600)
+    assert facts["activities"] == {"working": 1800 + 600, "on_phone": 1200}
+    assert facts["stretches"] == 1 and facts["slouched_s"] == 1800
+
+
+def test_sign_answers_are_part_of_the_conversation(tmp_path, monkeypatch):
+    day = time.strftime("%Y-%m-%d")
+    now = time.time()
+    data = tmp_path / "data"
+    data.mkdir()
+    with open(data / f"log_{day}.jsonl", "w") as f:
+        f.write(json.dumps({"type": "event", "unit": "crawl", "name": "notice", "kind": "break", "text": "Break?", "ts": now - 60}) + "\n")
+        f.write(json.dumps({"type": "event", "unit": "crawl", "name": "speech", "via": "gesture", "text": "👍 Yes", "ts": now - 30}) + "\n")
+    monkeypatch.setattr(B.pathlib.Path, "resolve", lambda self: tmp_path / "bridge" / "bridge.py")
+    items = B.read_messages(now - 3600, now)
+    assert [(i["from"], i["text"]) for i in items] == [("creature", "Break?"), ("owner", "👍 Yes")]

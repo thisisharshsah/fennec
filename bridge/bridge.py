@@ -30,6 +30,7 @@ import websockets
 from life import Life
 from brain import Brain
 from eye_control import EyeControl
+from scene import LABELS as ACTIVITY_LABELS, Scene
 import security
 from zeroconf import ServiceInfo
 from zeroconf.asyncio import AsyncZeroconf
@@ -642,7 +643,7 @@ def read_messages(since, until, unit=None):
             continue
         with open(f) as fh:
             for line in fh:
-                if '"notice"' not in line and '"notification"' not in line:
+                if '"notice"' not in line and '"notification"' not in line and '"gesture"' not in line:
                     continue
                 try:
                     m = json.loads(line)
@@ -655,7 +656,7 @@ def read_messages(since, until, unit=None):
                 if m.get("name") == "notice":
                     out.append({"id": f'{m.get("unit")}|{m["ts"]}|notice', "unit": m.get("unit"), "ts": m["ts"],
                                 "from": "creature", "kind": m.get("kind"), "text": m.get("text", "")})
-                elif m.get("name") == "speech" and m.get("via") == "notification":
+                elif m.get("name") == "speech" and m.get("via") in ("notification", "gesture"):
                     out.append({"id": f'{m.get("unit")}|{m["ts"]}|reply', "unit": m.get("unit"), "ts": m["ts"],
                                 "from": "owner", "kind": "reply", "text": m.get("text", "")})
     return out
@@ -805,10 +806,13 @@ LIFE_FILE = pathlib.Path(__file__).resolve().parent.parent / "data" / "life.json
 
 def day_facts(unit, since, until):
     """What the log says about a stretch of time, for the creature's daily recaps:
-    seconds someone was in front of it, temperature range, loud moments."""
+    seconds someone was in front of it, temperature range, loud moments, and from the eye:
+    seconds per activity, stretches and seconds slouched."""
     data = pathlib.Path(__file__).resolve().parent.parent / "data"
     keys = [f'"unit": "{n}"' for n in names_for(unit)]
     temps, loud, spans, start = [], 0, 0.0, None
+    activities, activity, activity_since = {}, None, None
+    stretches, slouched, slouch_start = 0, 0.0, None
     for f in sorted(data.glob("log_*.jsonl")):
         try:
             day = time.mktime(time.strptime(f.stem[4:], "%Y-%m-%d"))
@@ -838,10 +842,26 @@ def day_facts(unit, since, until):
                     elif name == "someone_left" and start is not None:
                         spans += ts - start
                         start = None
+                    elif name == "activity" and m.get("activity"):
+                        if activity is not None:
+                            activities[activity] = activities.get(activity, 0.0) + min(ts - activity_since, 3600)
+                        activity, activity_since = m["activity"], ts
+                    elif name == "stretched":
+                        stretches += 1
+                    elif name == "slouching" and slouch_start is None:
+                        slouch_start = ts
+                    elif name in ("sat_up", "stretched", "someone_left") and slouch_start is not None:
+                        slouched += ts - slouch_start
+                        slouch_start = None
     if start is not None:
         spans += until - start
+    if activity is not None:
+        activities[activity] = activities.get(activity, 0.0) + min(until - activity_since, 3600)
+    if slouch_start is not None:
+        slouched += until - slouch_start
     return {"present_s": spans, "temp_min": min(temps) if temps else None,
-            "temp_max": max(temps) if temps else None, "loud_events": loud}
+            "temp_max": max(temps) if temps else None, "loud_events": loud,
+            "activities": activities, "stretches": stretches, "slouched_s": slouched}
 
 
 NOTIFY_FILE = pathlib.Path(__file__).resolve().parent.parent / "data" / "notify.json"
@@ -900,6 +920,10 @@ def describe_room(store, unit):
         mins = int((now - presence["ts"]) // 60)
         lines.append(("someone is in front of you" if presence["name"] == "someone_in_front" else "nobody in front of you")
                      + f" (since {mins} min ago)")
+    scene = getattr(store, "scene", None)
+    now_line = scene.sentence() if scene else None
+    if now_line:
+        lines.append("right now, through the camera: " + now_line)
     look = next((e for e in reversed(recent) if e.get("name") in ("looked_at", "looked_away")), None)
     if look and look["name"] == "looked_at" and presence and presence["name"] == "someone_in_front":
         lines.append("they are looking at you right now")
@@ -966,6 +990,17 @@ EYE_EVENTS = {"person_appeared": "someone_in_front", "person_left": "someone_lef
               "slouching": "slouching", "sat_up": "sat_up", "yawned": "yawned", "eyes_heavy": "eyes_heavy"}
 SIGN_ANSWERS = {"thumbs_up": "👍 Yes", "open_palm": "✋ Not now", "nodded": "Yes (nodded)", "shook_head": "No (shook head)"}
 SIGN_ANSWER_WINDOW_S = 10 * 60          # a sign answers a notice this recent
+
+
+async def follow_scene(store, msg):
+    """Each outline updates the one-activity picture; a change is logged as an event of the creature."""
+    if msg.get("type") != "vision":
+        return
+    changed = store.scene.update(msg)
+    unit = body_unit(store)
+    if changed and unit:
+        await store.broadcast({"type": "event", "unit": unit, "name": "activity", "activity": changed,
+                               "text": ACTIVITY_LABELS[changed], "via": "eye", "t": 0, "ts": time.time()})
 
 
 async def sign_answer(store, msg):
@@ -1114,6 +1149,7 @@ async def main():
                     await announce_eye(store)
                 if "vision-person" in ((store.units.get(msg.get("unit")) or {}).get("hello") or {}).get("sensors", []):
                     await eye_follow(store, msg)
+                    await follow_scene(store, msg)
                     seen = eye_as_creature_event(store, msg)
                     if seen:
                         await store.broadcast(seen)            # comes back through this hook as the creature's
@@ -1123,6 +1159,7 @@ async def main():
             except Exception as e:
                 log.warning("life rule failed: %s", e)
         store.life_hook = hook
+        store.scene = Scene()
         store.eye = EyeControl(log)
         store.eye.release_leftovers()
         await store.eye.apply()

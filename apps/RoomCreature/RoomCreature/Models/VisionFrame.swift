@@ -22,6 +22,8 @@ struct VisionMessage: Decodable, Sendable {
     var posture: String?
     /// Yawns or heavy eyes lately.
     var tired: Bool?
+    /// What is in the owner's hands (phone, drink, food, book, headphones) and pets in view.
+    var things: [String]?
     var aspect: Double?
     /// Where the head points: -1 left .. +1 right of the picture.
     var aim: Double?
@@ -32,7 +34,7 @@ struct VisionMessage: Decodable, Sendable {
     var ts: Double?
 
     enum CodingKeys: String, CodingKey {
-        case unit, people, looking, present, bodies, faces, hands, sign, posture, tired, aspect, aim, pan, since, ts
+        case unit, people, looking, present, bodies, faces, hands, sign, posture, tired, things, aspect, aim, pan, since, ts
         case forUnit = "for"
     }
 }
@@ -113,6 +115,7 @@ struct VisionFrame: Sendable {
     let sign: String?
     let posture: String?
     let isTired: Bool
+    let things: [String]
     let aspect: Double
     let aim: Double?
     let pan: Int?
@@ -131,6 +134,7 @@ struct VisionFrame: Sendable {
         sign = message.sign
         posture = message.posture
         isTired = message.tired ?? false
+        things = message.things ?? []
         aspect = message.aspect ?? 16.0 / 9.0
         aim = message.aim
         pan = message.pan

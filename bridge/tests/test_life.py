@@ -223,3 +223,19 @@ def test_tired_signs_spread_out_do_not_count():
     for _ in range(3):
         assert life.observe(ev("yawned"))[1] == []
         clock.advance(10 * 60)
+
+
+def test_goodnight_recap_with_what_the_eye_saw():
+    clock = Clock(dt.datetime(2026, 10, 27, 23, 0))
+    facts = lambda unit, since, until: {"present_s": 4 * 3600, "activities": {"working": 3 * 3600, "on_phone": 40 * 60,
+                                                                             "drinking": 5 * 60},
+                                        "stretches": 3, "slouched_s": 50 * 60, "loud_events": 0}
+    life = L.Life(clock=clock, facts=facts)
+    life.observe(state(sound_db=30.0))
+    for _ in range(11):
+        clock.advance(60)
+        life.observe(state(sound_db=30.5))
+    _, notices = life.tick()
+    assert notices[0][2] == ("Goodnight. Today you spent 4 h at the desk with me, about 3 h working and about "
+                             "40 minutes on your phone. You stretched 3 times. You were hunched over for "
+                             "50 minutes. The room is quiet now.")

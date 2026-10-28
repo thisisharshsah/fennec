@@ -317,6 +317,51 @@ struct TiredReader {
     }
 }
 
+/// Things in the owner's hands (a phone, a drink, food, a book) and pets in view. Classifying the
+/// whole picture would name the room (a bed, a shelf), so only the area around the hands is read.
+struct ThingReader {
+    static let groups: [String: String] = [
+        "phone": "phone",
+        "cup": "drink", "mug": "drink", "drinking_glass": "drink", "bottle": "drink", "coffee": "drink",
+        "tea_drink": "drink", "drink": "drink",
+        "food": "food", "sandwich": "food", "pizza": "food", "fruit": "food", "banana": "food", "apple": "food",
+        "bowl": "food", "plate": "food",
+        "book": "book", "newspaper": "book",
+        "headphones": "headphones", "gamepad": "game controller",
+    ]
+    private var seen: [String: Date] = [:]
+
+    /// What was seen in the last 4 s (classification runs every 2 s and is not sure every time).
+    func things(at now: Date) -> [String] {
+        seen.filter { now.timeIntervalSince($0.value) < 4 }.map(\.key).sorted()
+    }
+
+    mutating func update(_ handler: VNImageRequestHandler, hands: [CGRect], now: Date) {
+        if let area = Self.around(hands) {
+            let classify = VNClassifyImageRequest()
+            classify.regionOfInterest = area
+            try? handler.perform([classify])
+            for c in classify.results ?? [] where c.confidence > 0.25 {
+                if let group = Self.groups[c.identifier] { seen[group] = now }
+            }
+        }
+        let animals = VNRecognizeAnimalsRequest()
+        try? handler.perform([animals])
+        for a in animals.results ?? [] {
+            if let label = a.labels.first, label.confidence > 0.6 { seen[label.identifier.lowercased()] = now }
+        }
+    }
+
+    /// The hands' boxes together, twice as large (what is held sticks out of the hand), in the picture.
+    static func around(_ hands: [CGRect]) -> CGRect? {
+        guard let first = hands.first else { return nil }
+        let union = hands.dropFirst().reduce(first) { $0.union($1) }
+        let grown = union.insetBy(dx: -union.width / 2, dy: -union.height / 2)
+        let clipped = grown.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        return clipped.isNull || clipped.width < 0.02 || clipped.height < 0.02 ? nil : clipped
+    }
+}
+
 final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     let session = AVCaptureSession()
     let queue = DispatchQueue(label: "fennec.eye")
@@ -339,6 +384,7 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
     var headReader = HeadReader()
     var postureReader = PostureReader()
     var tiredReader = TiredReader()
+    var thingReader = ThingReader()
     var handBoxes: [CGRect] = []
     var lastSign: (name: String, at: Date)?
 
@@ -404,6 +450,7 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
         for event in tiredReader.update(landmarked, pitch: nearestFace?.pitch?.doubleValue, now: now) {
             signal(event, event == "yawned" ? "yawn" : "heavy eyes", now)
         }
+        if frames % 20 == 0 { thingReader.update(handler, hands: handBoxes, now: now) }   // every 2 s
         let found = bodies.results ?? []
         people = found.count
         if let nearest = found.max(by: { $0.boundingBox.height < $1.boundingBox.height }) {
@@ -423,6 +470,8 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
         if let shown = lastSign, now.timeIntervalSince(shown.at) < 2 { outline["sign"] = shown.name }
         if present, let posture = postureReader.state { outline["posture"] = posture.rawValue }
         if present { outline["tired"] = tiredReader.isTired }
+        let things = thingReader.things(at: now)
+        if !things.isEmpty { outline["things"] = things }
         if present { outline["aim"] = (x * 100).rounded() / 100; outline["pan"] = pan(x) }
         if let since = arrivedAt { outline["since"] = since.timeIntervalSince1970 }
         post("vision", outline) { [weak self] answer in                // the apps draw this; the hub does not keep it
@@ -484,6 +533,8 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
             lines.append(String(format: "closeness %.2f (bigger is closer)", size))
             if let posture = postureReader.state { lines.append("posture: \(posture.rawValue)") }
             if tiredReader.isTired { lines.append("looks tired") }
+            let things = thingReader.things(at: now)
+            if !things.isEmpty { lines.append("sees: \(things.joined(separator: ", "))") }
             if let since = arrivedAt { lines.append("here for \(Int(now.timeIntervalSince(since)) / 60) min \(Int(now.timeIntervalSince(since)) % 60) s") }
         } else {
             lines.append("away")

@@ -214,6 +214,14 @@ More events of the creature from the eye: hand signs `waved`, `thumbs_up`,
 notice is also kept as the owner's answer (a `speech` event, `"via":"gesture"`).
 New notice kinds: `posture`, `tired`.
 
+What is happening: the hub folds the eye's outlines into one activity
+(`bridge/scene.py`: away, with_someone, on_phone, eating, drinking,
+stretching, reading, with_creature, working; a new one must hold 8 s) and
+logs each change as `{"type":"event","name":"activity","activity":"working","text":"working at the desk","via":"eye"}`.
+The eye's outline carries `things` (in hand: phone, drink, food, book,
+headphones; pets: cat, dog). Recaps count minutes per activity, stretches
+and time hunched; the agent's `whats_happening` tool returns the same.
+
 When the eye runs: `{"cmd":"eye","mode":"off|auto|on"}`. The hub starts and
 stops the eye program itself (auto: while the creature's own distance sensor
 feels someone, and two minutes after), keeps the mode in data/eye.json, puts

@@ -40,6 +40,27 @@ struct CreatureDetailView: View {
     }
 
     private var unitID: String { model.store.registry.currentID(for: initialID) }
+
+    /// The eye's card (when the hub has an eye), the live readings and the way to History.
+    private func senses(_ unit: UnitState) -> some View {
+        let id = unitID
+        let frame = model.store.vision[id]
+        let eye = model.store.eye
+        return VStack(spacing: Theme.Spacing.l) {
+            if eye != nil || frame != nil {
+                VisionCard(frame: frame, eye: eye, activity: latestActivity, name: name, unitID: id)
+            }
+            SensesCard(unit: unit, embedded: true)
+            historyLink
+        }
+        .padding(.horizontal, Theme.Spacing.l)
+    }
+
+    /// What the hub last made of everything the eye sees (events are newest first).
+    private var latestActivity: RoomEvent? {
+        let id = unitID
+        return model.store.events.first { $0.unit == id && $0.name == "activity" }
+    }
     private var known: KnownCreature? { model.store.registry.creature(unitID) }
     private var name: String { model.store.registry.name(for: unitID) }
     private var canCommand: Bool { model.isHubConnected && unit.isConnected }
@@ -65,14 +86,7 @@ struct CreatureDetailView: View {
                     case .play:
                         CreatureHero.Controls(unit: unit)
                     case .senses:
-                        VStack(spacing: Theme.Spacing.l) {
-                            if model.store.eye != nil || model.store.vision[unitID] != nil {
-                                VisionCard(frame: model.store.vision[unitID], eye: model.store.eye, name: name, unitID: unitID)
-                            }
-                            SensesCard(unit: unit, embedded: true)
-                            historyLink
-                        }
-                        .padding(.horizontal, Theme.Spacing.l)
+                        senses(unit)
                     case .activity:
                         EventFeed(
                             events: model.store.events.filter { $0.unit == unitID && !Self.internalEvents.contains($0.name) },
@@ -172,7 +186,7 @@ struct CreatureDetailView: View {
     }
 
     /// Plumbing, not things that happened in the room.
-    static let internalEvents: Set<String> = ["wifi_cmd", "error", "setup", "journal", "ack"]
+    static let internalEvents: Set<String> = ["wifi_cmd", "error", "setup", "journal", "ack", "activity"]
 
     // MARK: Chat
 

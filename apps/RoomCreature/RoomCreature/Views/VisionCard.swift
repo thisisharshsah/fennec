@@ -12,6 +12,8 @@ struct VisionCard: View {
     @Environment(AppModel.self) private var model
     let frame: VisionFrame?
     let eye: EyeStatus?
+    /// The latest "activity" event: what the hub makes of everything the eye sees.
+    var activity: RoomEvent?
     let name: String
     let unitID: String
     /// Off by default: the picture is sent only while this is on and the card is on screen.
@@ -32,6 +34,9 @@ struct VisionCard: View {
             VStack(alignment: .leading, spacing: Theme.Spacing.m) {
                 CardHeader("What \(name) sees", systemImage: "eye") { modeMenu(live: live != nil) }
                 if let live {
+                    if let activity, let text = activity.text {
+                        nowLine(text, since: activity.time, at: context.date)
+                    }
                     scene(live)
                     facts(live, at: context.date)
                     Toggle(isOn: $showsPicture) {
@@ -62,6 +67,38 @@ struct VisionCard: View {
             if showsPicture { model.client.send(.picture(false)) }
             showsPicture = false
             model.store.dropPicture(for: unitID)
+        }
+    }
+
+    /// "Working at the desk · 25 min": one line for everything at once.
+    private func nowLine(_ text: String, since: Date, at now: Date) -> some View {
+        HStack(spacing: Theme.Spacing.s) {
+            Image(systemName: Self.activitySymbol(activity?.text))
+                .foregroundStyle(Theme.accent)
+                .accessibilityHidden(true)
+            Text(text.prefix(1).uppercased() + text.dropFirst())
+                .font(Theme.Text.headline)
+                .foregroundStyle(Theme.textPrimary)
+            Text(Formatting.duration(now.timeIntervalSince(since)))
+                .font(Theme.Text.callout)
+                .foregroundStyle(Theme.textSecondary)
+                .monospacedDigit()
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private static func activitySymbol(_ label: String?) -> String {
+        switch label ?? "" {
+        case let l where l.contains("phone"): "iphone"
+        case let l where l.contains("drink"): "cup.and.saucer.fill"
+        case let l where l.contains("eating"): "fork.knife"
+        case let l where l.contains("reading"): "book.fill"
+        case let l where l.contains("stretch"): "figure.arms.open"
+        case let l where l.contains("someone"): "person.2.fill"
+        case let l where l.contains("creature"): "eye.fill"
+        case let l where l.contains("away"): "person.fill.xmark"
+        default: "laptopcomputer"
         }
     }
 
@@ -211,6 +248,9 @@ struct VisionCard: View {
             fact("Slouching", systemImage: "arrow.down.to.line", tint: Theme.MoodColor.color(for: .alert))
         } else if frame.isPresent, frame.posture == "close" {
             fact("Close to screen", systemImage: "arrow.down.right.and.arrow.up.left", tint: Theme.MoodColor.color(for: .alert))
+        }
+        ForEach(frame.things.filter { ["cat", "dog"].contains($0) }, id: \.self) { pet in
+            fact("\(pet.capitalized) in view", systemImage: "pawprint.fill", tint: Theme.MoodColor.color(for: .pleased))
         }
         if frame.isPresent, frame.isTired {
             fact("Tired", systemImage: "zzz", tint: Theme.MoodColor.color(for: .sleepy))

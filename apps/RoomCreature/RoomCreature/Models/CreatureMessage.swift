@@ -117,7 +117,7 @@ struct CreatureMessage: Identifiable, Hashable, Sendable {
         if event.name == "notice" {
             self.init(id: "\(unit)|\(ts)|notice", unit: unit, time: Date(timeIntervalSince1970: ts),
                       sender: .creature, kind: event.kind ?? "say", text: text)
-        } else if event.name == "speech", event.via == "notification" {
+        } else if event.name == "speech", event.via == "notification" || event.via == "gesture" {
             self.init(id: "\(unit)|\(ts)|reply", unit: unit, time: Date(timeIntervalSince1970: ts),
                       sender: .owner, kind: "reply", text: text)
         } else {

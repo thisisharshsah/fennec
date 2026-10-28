@@ -249,7 +249,18 @@ class Life:
         f = self._facts(unit, morning.timestamp(), now)
         if not f or not f.get("present_s"):
             return " The room is quiet."
-        return f" Today you spent {self._duration(f['present_s'])} at the desk with me. The room is quiet now."
+        text = f" Today you spent {self._duration(f['present_s'])} at the desk with me."
+        seen = f.get("activities") or {}
+        extras = [f"about {self._duration(seen[k])} {what}" for k, what in
+                  (("working", "working"), ("on_phone", "on your phone")) if seen.get(k, 0) >= 10 * 60]
+        if extras:
+            text = text[:-1] + ", " + " and ".join(extras) + "."
+        if f.get("stretches"):
+            n = f["stretches"]
+            text += f" You stretched {'once' if n == 1 else f'{n} times'}."
+        if f.get("slouched_s", 0) >= 15 * 60:
+            text += f" You were hunched over for {self._duration(f['slouched_s'])}."
+        return text + " The room is quiet now."
 
     # helpers
 
