@@ -82,7 +82,7 @@ final class Companion {
     private func send(_ said: String) {
         guard let model, let unitID else { return }
         model.sendMessage(said, to: unitID)
-        if !(model.store.brain?.hasKey ?? false) {
+        if let brain = model.store.brain, !(brain.hasKey ?? false) {
             if toldBrainOff { listen(); return }
             toldBrainOff = true
             creatureSays("I can hear you, but my thinking part is not switched on yet. Your words are saved for later.", isThought: false)
