@@ -338,17 +338,15 @@ struct ChatComposer: View {
                 .onSubmit(send)
                 .disabled(!model.isHubConnected)
                 .padding(.vertical, Theme.Spacing.s)
-            Button(action: send) {
-                Image(systemName: "arrow.up")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(Theme.onAccent)
-                    .frame(width: 32, height: 32)
-                    .background(canSend ? Theme.accent : Theme.inactive, in: Circle())
+            #if os(iOS)
+            if text.isEmpty && model.isHubConnected {
+                TalkButton(unitID: unitID, name: name, text: $text)
+            } else {
+                sendButton
             }
-            .buttonStyle(.plain)
-            .disabled(!canSend)
-            .accessibilityLabel("Send")
-            .animation(.easeInOut(duration: 0.15), value: canSend)
+            #else
+            sendButton
+            #endif
         }
         .padding(.leading, Theme.Spacing.l)
         .padding(.trailing, Theme.Spacing.xs)
@@ -363,6 +361,20 @@ struct ChatComposer: View {
         .background(.bar)
     }
 
+    private var sendButton: some View {
+            Button(action: send) {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(Theme.onAccent)
+                    .frame(width: 32, height: 32)
+                    .background(canSend ? Theme.accent : Theme.inactive, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSend)
+            .accessibilityLabel("Send")
+            .animation(.easeInOut(duration: 0.15), value: canSend)
+    }
+
     private func send() {
         guard canSend else { return }
         Haptics.light()
@@ -370,6 +382,75 @@ struct ChatComposer: View {
         text = ""
     }
 }
+
+#if os(iOS)
+/// Hold to talk: speak, let go, and the words go to the creature. While held, the words appear in
+/// the message field as they are heard. VoiceOver: activate once to start, again to send.
+private struct TalkButton: View {
+    @Environment(AppModel.self) private var model
+    let unitID: String
+    let name: String
+    @Binding var text: String
+    @State private var holding = false
+
+    private var listening: Bool { model.listener.isListening }
+
+    var body: some View {
+        Image(systemName: listening ? "waveform" : "mic.fill")
+            .font(.system(size: 15, weight: .bold))
+            .symbolEffect(.variableColor.iterative, isActive: listening)
+            .foregroundStyle(Theme.onAccent)
+            .frame(width: 32, height: 32)
+            .background(listening ? Theme.negative : Theme.accent, in: Circle())
+            .scaleEffect(listening ? 1.15 : 1)
+            .animation(.spring(duration: 0.25), value: listening)
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard !holding else { return }
+                        holding = true
+                        begin()
+                    }
+                    .onEnded { _ in
+                        holding = false
+                        end()
+                    }
+            )
+            .onChange(of: model.listener.transcript) { _, heard in
+                if listening { text = heard }
+            }
+            .accessibilityLabel(listening ? "Send what you said" : "Talk to \(name)")
+            .accessibilityHint("Hold and speak, then let go")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { listening ? end() : begin() }
+            .overlay(alignment: .top) {
+                if let problem = model.listener.problem {
+                    Text(problem)
+                        .font(Theme.Text.caption)
+                        .foregroundStyle(Theme.negative)
+                        .fixedSize()
+                        .offset(y: -28)
+                }
+            }
+    }
+
+    private func begin() {
+        Haptics.light()
+        model.voice.stop()                       // the creature hushes while the owner talks
+        Task { await model.listener.start() }
+    }
+
+    private func end() {
+        Task {
+            let said = await model.listener.finish()
+            text = ""
+            guard !said.isEmpty else { return }
+            Haptics.light()
+            model.sendMessage(said, to: unitID)
+        }
+    }
+}
+#endif
 
 // MARK: - Time formatting
 

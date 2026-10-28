@@ -9,6 +9,10 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Fennec listens while you hold the microphone button in Chat, so you can talk to your creature instead of typing.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Fennec turns what you say into a message for your creature, on this iPhone where it can.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_roomcreature._tcp</string>

@@ -36,6 +36,8 @@ struct RoomCreatureApp: App {
                 }
                 .onChange(of: model.desiredEndpoint) { model.applyDesiredEndpoint() }
                 .onChange(of: scenePhase) { old, new in
+                    model.isActive = new == .active
+                    if new != .active { model.voice.stop() }
                     if new == .background { model.backgroundedAt = .now }
                     if new == .active && old != .active { model.resume() }
                 }

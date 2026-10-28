@@ -7,6 +7,8 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
+    /// Mirrors CreatureVoice.isEnabled so the switch redraws when flipped.
+    @State private var speaksAloud = CreatureVoice.isEnabled
     @State private var hostDraft = ""
     @State private var portDraft: Int?
 
@@ -100,6 +102,12 @@ struct SettingsView: View {
                 Label("Creature replies", systemImage: "bubble.left.and.text.bubble.right")
             }
             .disabled(brain == nil || !(brain?.hasKey ?? false))
+            #if os(iOS)
+            Toggle(isOn: Binding(get: { CreatureVoice.isEnabled }, set: { CreatureVoice.isEnabled = $0; speaksAloud = $0 })) {
+                Label("Speak messages aloud", systemImage: "speaker.wave.2")
+            }
+            .id(speaksAloud)
+            #endif
             LabeledContent("Status") {
                 Text(brainStatusText(brain))
                     .foregroundStyle(ready ? Theme.positive : Theme.textSecondary)

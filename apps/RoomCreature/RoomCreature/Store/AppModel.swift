@@ -9,6 +9,14 @@ final class AppModel {
     let navigator = Navigator()
     let client: BridgeClient
     let notifier: CreatureNotifier
+    /// Reads a creature's new messages aloud on the iPhone (silent on the Mac).
+    let voice = CreatureVoice()
+    #if os(iOS)
+    /// Hold to talk in Chat.
+    let listener = SpeechListener()
+    #endif
+    /// The app is on screen; a creature only speaks then.
+    @ObservationIgnored var isActive = true
 
     init() {
         client = BridgeClient(store: store)
@@ -16,6 +24,9 @@ final class AppModel {
         store.onEvent = { [weak self] event in
             guard let self else { return }
             self.notifier.handle(event, creatureName: self.store.registry.name(for: event.unit))
+            if self.isActive, event.isNotice, let text = event.text, !self.isListening {
+                self.voice.say(text)
+            }
         }
         store.messages.onUnreadChange = { [weak self] count in
             self?.notifier.setBadge(count)
@@ -85,6 +96,15 @@ final class AppModel {
     }
 
     var isHubConnected: Bool { client.status == .connected }
+
+    /// The owner is talking: the creature does not speak over them.
+    var isListening: Bool {
+        #if os(iOS)
+        listener.isListening
+        #else
+        false
+        #endif
+    }
 
     /// When the app went to the background, for `resume`.
     @ObservationIgnored var backgroundedAt: Date?
