@@ -583,5 +583,29 @@ struct TalkModePickers: View {
         } label: {
             Label("I talk with", systemImage: "person.wave.2")
         }
+        if talk.reply == .voice {
+            let voices = CreatureVoice.choices()
+            Picker(selection: $talk.voiceID) {
+                Text("Automatic").tag("")
+                Section("Voices") {
+                    ForEach(voices.filter { !$0.isFun }) { Text("\($0.name) (\($0.detail))").tag($0.id) }
+                }
+                Section("Fun voices") {
+                    ForEach(voices.filter(\.isFun)) { Text($0.name).tag($0.id) }
+                }
+            } label: {
+                Label("Voice", systemImage: "person.crop.circle.badge.waveform")
+            }
+            Picker(selection: $talk.tone) {
+                ForEach(VoiceTone.allCases) { Text($0.title).tag($0) }
+            } label: {
+                Label("Tone", systemImage: "tuningfork")
+            }
+            Button {
+                model.voice.preview("Crawl")
+            } label: {
+                Label("Preview voice", systemImage: "play.circle")
+            }
+        }
     }
 }
