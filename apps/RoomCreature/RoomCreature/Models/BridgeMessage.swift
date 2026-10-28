@@ -13,6 +13,18 @@ enum BridgeMessage: Sendable {
     case life(Bool)
     /// The conversation from the hub's log (notices and the owner's replies), oldest first.
     case messages([MessageItem])
+    case brain(BrainStatus)
+    /// On a network connection without a valid token: only pairing is possible.
+    case authRequired(AuthRequiredMessage)
+    case paired(PairedMessage)
+    case pairRefused(reason: String)
+    /// A trusted client opened the pairing window; it closes at this Unix time.
+    case pairing(openUntil: Double)
+    case devices([PairedDevice])
+    /// The eye's live outline of what it sees (not logged by the hub).
+    case vision(VisionMessage)
+    /// The eye's live picture, while this app asked for it.
+    case picture(PictureMessage)
 }
 
 struct BridgeMessageError: Error {
@@ -32,6 +44,19 @@ extension BridgeMessage {
         let items: [MessageItem]
     }
 
+    private struct PairRefusedPayload: Decodable {
+        let reason: String?
+    }
+
+    private struct PairingPayload: Decodable {
+        let openUntil: Double?
+        enum CodingKeys: String, CodingKey { case openUntil = "open_until" }
+    }
+
+    private struct DevicesPayload: Decodable {
+        let items: [PairedDevice]?
+    }
+
     static func decode(_ data: Data) throws -> BridgeMessage {
         let decoder = JSONDecoder()
         let type = try decoder.decode(Envelope.self, from: data).type
@@ -46,8 +71,16 @@ extension BridgeMessage {
         case "unit_status": return .unitStatus(try decoder.decode(UnitStatusMessage.self, from: data))
         case "body": return .body(try decoder.decode(BodyMessage.self, from: data))
         case "series": return .series(try decoder.decode(SeriesMessage.self, from: data))
+        case "brain": return .brain(try decoder.decode(BrainStatus.self, from: data))
         case "life": return .life(try decoder.decode(LifeMessage.self, from: data).enabled ?? false)
         case "messages": return .messages(try decoder.decode(MessagesPayload.self, from: data).items)
+        case "auth_required": return .authRequired(try decoder.decode(AuthRequiredMessage.self, from: data))
+        case "paired": return .paired(try decoder.decode(PairedMessage.self, from: data))
+        case "pair_refused": return .pairRefused(reason: try decoder.decode(PairRefusedPayload.self, from: data).reason ?? "")
+        case "pairing": return .pairing(openUntil: try decoder.decode(PairingPayload.self, from: data).openUntil ?? 0)
+        case "devices": return .devices(try decoder.decode(DevicesPayload.self, from: data).items ?? [])
+        case "vision": return .vision(try decoder.decode(VisionMessage.self, from: data))
+        case "picture": return .picture(try decoder.decode(PictureMessage.self, from: data))
         default: throw BridgeMessageError(type: type)
         }
     }
@@ -237,4 +270,61 @@ struct MessageItem: Decodable, Sendable {
     var from: String?
     var kind: String?
     var text: String?
+}
+
+/// The hub's answering brain: whether it can reply, and what it spent today.
+struct BrainStatus: Decodable, Sendable, Equatable {
+    var enabled: Bool?
+    var hasKey: Bool?
+    var dailyCapUsd: Double?
+    var spentTodayUsd: Double?
+    var model: String?
+    /// "conscious" (the owner's local model gateway) or "anthropic".
+    var provider: String?
+    var local: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case enabled, model, provider, local
+        case hasKey = "has_key"
+        case dailyCapUsd = "daily_cap_usd"
+        case spentTodayUsd = "spent_today_usd"
+    }
+}
+
+/// Sent by the hub to a network client that has no valid token.
+struct AuthRequiredMessage: Decodable, Sendable {
+    var pairingOpen: Bool?
+    /// SHA-256 of the hub certificate's DER, hex (only on the first auth_required of a connection).
+    var fingerprint: String?
+
+    enum CodingKeys: String, CodingKey {
+        case fingerprint
+        case pairingOpen = "pairing_open"
+    }
+}
+
+/// The hub accepted this device: the token to present from now on. Secret, never log it.
+struct PairedMessage: Decodable, Sendable {
+    var deviceID: String
+    var token: String
+    var fingerprint: String?
+
+    enum CodingKeys: String, CodingKey {
+        case token, fingerprint
+        case deviceID = "device_id"
+    }
+}
+
+/// A device the hub has issued a token to.
+struct PairedDevice: Decodable, Sendable, Identifiable, Equatable {
+    var id: String
+    var name: String?
+    var kind: String?
+    var created: Double?
+    var lastSeen: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, kind, created
+        case lastSeen = "last_seen"
+    }
 }

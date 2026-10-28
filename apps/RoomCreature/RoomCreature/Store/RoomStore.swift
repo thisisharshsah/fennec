@@ -11,6 +11,8 @@ final class RoomStore {
     private(set) var bridgeVersion: String?
     /// The hub's daily-life rules (greetings, break reminders, goodnight); nil until the hub says.
     private(set) var lifeEnabled: Bool?
+    /// The hub's answering brain (who replies when the owner writes), nil until the hub says.
+    private(set) var brain: BrainStatus?
     /// Called with each live event as it arrives (the notifier listens).
     @ObservationIgnored var onEvent: ((RoomEvent) -> Void)?
     private(set) var bridgeLanIP: String?
@@ -18,6 +20,10 @@ final class RoomStore {
     private(set) var wifiRequests: [String: Date] = [:]
     /// History answers from the hub, keyed by the request id the view chose.
     private(set) var series: [String: [(time: Date, value: Double)]] = [:]
+    /// The latest outline from each creature's eye, keyed by the creature.
+    private(set) var vision: [String: VisionFrame] = [:]
+    /// The latest live picture from each creature's eye, while one is asked for. Memory only.
+    private(set) var pictures: [String: LivePicture] = [:]
     /// Creatures known to this app, persisted across launches.
     let registry = CreatureRegistry()
     /// What the creatures said and the owner's replies.
@@ -39,6 +45,18 @@ final class RoomStore {
             messages.ingest(items.compactMap(CreatureMessage.init))
         case .life(let enabled):
             lifeEnabled = enabled
+        case .vision(let outline):
+            if let id = outline.forUnit {
+                vision[registry.currentID(for: id)] = VisionFrame(outline)
+            }
+        case .picture(let picture):
+            if let id = picture.forUnit, let base64 = picture.jpeg, let jpeg = Data(base64Encoded: base64) {
+                pictures[registry.currentID(for: id)] = LivePicture(jpeg: jpeg, receivedAt: .now)
+            }
+        case .brain(let status):
+            brain = status
+        case .authRequired, .paired, .pairRefused, .pairing, .devices:
+            break                                   // the connection's business: BridgeClient handles them
         case .hello(let hello):
             bridgeVersion = hello.bridge
             lifeEnabled = hello.life ?? lifeEnabled
@@ -80,7 +98,7 @@ final class RoomStore {
                 }
             }
         case .event(let event):
-            if let id = event.unit {
+            if let id = event.unit, id != "hub" {        // the hub's own events (device_paired) are not a unit
                 update(id) { unit in
                     unit.link = event.link ?? unit.link
                     unit.lastSeen = Self.time(event.ts)
@@ -152,6 +170,11 @@ final class RoomStore {
 
     private static func time(_ ts: Double?) -> Date {
         ts.map { Date(timeIntervalSince1970: $0) } ?? .now
+    }
+
+    /// Forgets the live picture when the owner turns it off.
+    func dropPicture(for unitID: String) {
+        pictures[unitID] = nil
     }
 
     func clearHistory() {

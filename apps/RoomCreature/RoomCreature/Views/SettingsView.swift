@@ -8,14 +8,16 @@ struct SettingsView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
     @State private var hostDraft = ""
-    @State private var portDraft = 8777
+    @State private var portDraft: Int?
 
     var body: some View {
         @Bindable var settings = model.settings
         Form {
             lifeSection
+            brainSection
             NotificationSettingsSections(notifier: model.notifier, openSystemSettings: openSystemSettings)
             connectionSection(settings: settings)
+            SecuritySections()
             SavedWifiPasswordsSection()
             aboutSection
         }
@@ -59,7 +61,7 @@ struct SettingsView: View {
             TextField("Host", text: $hostDraft)
                 .autocorrectionDisabled()
                 .onSubmit(applyDrafts)
-            TextField("Port", value: $portDraft, format: .number.grouping(.never))
+            TextField("Port", value: $portDraft, format: .number.grouping(.never), prompt: Text(String(defaultPort)))
                 .onSubmit(applyDrafts)
             #if os(iOS)
                 .keyboardType(.numberPad)
@@ -78,11 +80,66 @@ struct SettingsView: View {
         } header: {
             Label("Hub connection", systemImage: "network")
         } footer: {
-            Text("The hub is the program on your Mac that the creatures talk to. Bonjour finds it on the local network; the host and port are used otherwise.")
+            Text("The hub is the program on your Mac that the creatures talk to. Bonjour finds it on the local network; the host and port are used otherwise. On this Mac the app uses localhost, port 8777; from anywhere else it uses an encrypted connection on port 8779. Leave the port empty for the default.")
         }
     }
 
     // MARK: About
+
+    private var brainSection: some View {
+        let brain = model.store.brain
+        let ready = (brain?.hasKey ?? false) && (brain?.enabled ?? false)
+        return Section {
+            Toggle(isOn: Binding(
+                get: { brain?.enabled ?? false },
+                set: { on in
+                    Haptics.light()
+                    model.client.send(.brain(on: on))
+                }
+            )) {
+                Label("Creature replies", systemImage: "bubble.left.and.text.bubble.right")
+            }
+            .disabled(brain == nil || !(brain?.hasKey ?? false))
+            LabeledContent("Status") {
+                Text(brainStatusText(brain))
+                    .foregroundStyle(ready ? Theme.positive : Theme.textSecondary)
+            }
+            if let brain, brain.hasKey ?? false {
+                LabeledContent("Model") {
+                    Text((brain.local ?? false) ? "\(brain.model ?? "local") on this Mac" : (brain.model ?? "Claude"))
+                }
+            }
+            if let brain, brain.hasKey ?? false, !(brain.local ?? false) {
+                LabeledContent("Spent today") {
+                    Text(String(format: "$%.2f of $%.2f", brain.spentTodayUsd ?? 0, brain.dailyCapUsd ?? 0))
+                        .monospacedDigit()
+                }
+                Stepper(
+                    "Daily limit: $\(String(format: "%.2f", brain.dailyCapUsd ?? 0.5))",
+                    value: Binding(
+                        get: { brain.dailyCapUsd ?? 0.5 },
+                        set: { cap in model.client.send(.brain(dailyCapUsd: cap)) }
+                    ),
+                    in: 0...10,
+                    step: 0.25
+                )
+            }
+        } header: {
+            Text("Conversation")
+        } footer: {
+            Text(brain?.hasKey ?? false
+                ? "When you write to a creature in Chat, it answers in its own words, using what its sensors know about the room. It stops for the day at the limit."
+                : "To let creatures answer you, the hub needs a model to talk to. Until then your messages are kept and an agent can still read them.")
+        }
+    }
+
+    private func brainStatusText(_ brain: BrainStatus?) -> String {
+        guard let brain else { return "Waiting for the hub" }
+        if !(brain.hasKey ?? false) { return "Not set up" }
+        if !(brain.enabled ?? false) { return "Off" }
+        if (brain.spentTodayUsd ?? 0) >= (brain.dailyCapUsd ?? 0) { return "Paused until tomorrow" }
+        return (brain.local ?? false) ? "Answering, free" : "Answering"
+    }
 
     private var lifeSection: some View {
         Section {
@@ -136,6 +193,11 @@ struct SettingsView: View {
         return build.map { "\(short) (\($0))" } ?? short
     }
 
+    /// The port used when the field is empty, for the host being typed.
+    private var defaultPort: UInt16 {
+        BridgeEndpoint.isLoopbackHost(hostDraft) ? BridgeEndpoint.localPort : BridgeEndpoint.securePort
+    }
+
     private var draftsChanged: Bool {
         hostDraft != model.settings.host || portDraft != model.settings.port
     }
@@ -147,7 +209,8 @@ struct SettingsView: View {
 
     private func applyDrafts() {
         let host = hostDraft.trimmingCharacters(in: .whitespaces)
-        guard !host.isEmpty, (1...65535).contains(portDraft) else { return }
+        guard !host.isEmpty else { return }
+        if let portDraft, !(1...65535).contains(portDraft) { return }
         model.settings.host = host
         model.settings.port = portDraft
     }

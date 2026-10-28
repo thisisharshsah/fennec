@@ -47,6 +47,8 @@ struct RoomEvent: Identifiable, Hashable, Sendable {
         case "moved": "move.3d"
         case "someone_in_front": "person.fill"
         case "someone_left": "person.fill.xmark"
+        case "looked_at": "eye.fill"
+        case "looked_away": "eye.slash"
         case "sound_started": "speaker.wave.2.fill"
         case "sound_stopped": "speaker.slash.fill"
         case "boot": "power"

@@ -18,7 +18,10 @@ struct BridgeCommand: Encodable, Sendable {
     var seconds: Double?
     var request: String?
     var on: Int?
+    var dailyCapUsd: Double?
     var days: Int?
+    var kind: String?
+    var revoke: String?
 
     static func express(_ mood: Mood, unit: String) -> BridgeCommand {
         BridgeCommand(cmd: "express", unit: unit, mood: mood.rawValue)
@@ -70,6 +73,11 @@ struct BridgeCommand: Encodable, Sendable {
         BridgeCommand(cmd: "say", unit: unit, text: text)
     }
 
+    /// The creature's answering brain: ask for its status, or change it.
+    static func brain(on: Bool? = nil, dailyCapUsd: Double? = nil) -> BridgeCommand {
+        BridgeCommand(cmd: "brain", unit: "", on: on.map { $0 ? 1 : 0 }, dailyCapUsd: dailyCapUsd)
+    }
+
     /// Turns the hub's daily-life rules on or off (answered by the hub, not a unit).
     static func life(_ enabled: Bool) -> BridgeCommand {
         BridgeCommand(cmd: "life", unit: "", on: enabled ? 1 : 0)
@@ -83,6 +91,26 @@ struct BridgeCommand: Encodable, Sendable {
     /// Asks the hub (not the unit) for one field's history from its log.
     static func series(field: String, seconds: Double, unit: String, request: String) -> BridgeCommand {
         BridgeCommand(cmd: "series", unit: unit, field: field, seconds: seconds, request: request)
+    }
+
+    /// Asks the hub for a device token (only accepted while its pairing window is open).
+    static func pair(deviceName: String) -> BridgeCommand {
+        BridgeCommand(cmd: "pair", unit: "", name: deviceName, kind: "app")
+    }
+
+    /// Opens the hub's pairing window for 60 s so another device can pair (trusted clients only).
+    static func pairOpen() -> BridgeCommand {
+        BridgeCommand(cmd: "pair_open", unit: "")
+    }
+
+    /// Lists the paired devices, revoking one first when an id is given.
+    static func devices(revoke: String? = nil) -> BridgeCommand {
+        BridgeCommand(cmd: "devices", unit: "", revoke: revoke)
+    }
+
+    /// Starts or stops the eye's live picture for this app.
+    static func picture(_ on: Bool) -> BridgeCommand {
+        BridgeCommand(cmd: "picture", unit: "", on: on ? 1 : 0)
     }
 
     static func speak(_ text: String, unit: String, voice: String? = nil) -> BridgeCommand {

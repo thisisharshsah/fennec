@@ -66,6 +66,9 @@ struct CreatureDetailView: View {
                         CreatureHero.Controls(unit: unit)
                     case .senses:
                         VStack(spacing: Theme.Spacing.l) {
+                            if let vision = model.store.vision[unitID] {
+                                VisionCard(frame: vision, name: name, unitID: unitID)
+                            }
                             SensesCard(unit: unit, embedded: true)
                             historyLink
                         }

@@ -25,6 +25,7 @@ struct ConnectionStatusView: View {
         case .connected: Theme.positive
         case .connecting: Theme.warning
         case .retrying: Theme.warning
+        case .needsPairing: Theme.warning
         case .idle: Theme.inactive
         }
     }
