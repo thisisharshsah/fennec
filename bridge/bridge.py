@@ -32,6 +32,7 @@ from brain import Brain
 from eye_control import EyeControl
 from scene import LABELS as ACTIVITY_LABELS, Scene
 from safety import Safety
+from mind import Mind
 import security
 from zeroconf import ServiceInfo
 from zeroconf.asyncio import AsyncZeroconf
@@ -650,7 +651,8 @@ def read_messages(since, until, unit=None):
             continue
         with open(f) as fh:
             for line in fh:
-                if '"notice"' not in line and '"notification"' not in line and '"gesture"' not in line:
+                if '"notice"' not in line and '"notification"' not in line and '"gesture"' not in line \
+                        and '"thought"' not in line:
                     continue
                 try:
                     m = json.loads(line)
@@ -663,6 +665,9 @@ def read_messages(since, until, unit=None):
                 if m.get("name") == "notice":
                     out.append({"id": f'{m.get("unit")}|{m["ts"]}|notice', "unit": m.get("unit"), "ts": m["ts"],
                                 "from": "creature", "kind": m.get("kind"), "text": m.get("text", "")})
+                elif m.get("name") == "thought":
+                    out.append({"id": f'{m.get("unit")}|{m["ts"]}|thought', "unit": m.get("unit"), "ts": m["ts"],
+                                "from": "creature", "kind": "thought", "text": m.get("text", "")})
                 elif m.get("name") == "speech" and m.get("via") in ("notification", "gesture"):
                     out.append({"id": f'{m.get("unit")}|{m["ts"]}|reply', "unit": m.get("unit"), "ts": m["ts"],
                                 "from": "owner", "kind": "reply", "text": m.get("text", "")})
@@ -1105,6 +1110,32 @@ async def run_safety(store, items):
         await send_to_apps(store, store.safety.status())
 
 
+async def mind_loop(store):
+    """The creature's ongoing thoughts: the brain writes them when it is on, templates otherwise."""
+    while True:
+        await asyncio.sleep(20)
+        try:
+            unit = body_unit(store)
+            if not unit:
+                continue
+            summary = store.scene.summary()
+            temp = ((store.units.get(unit) or {}).get("last_state") or {}).get("temp_c")
+            key = Mind.key(summary, temp)
+            if not store.mind.due(key):
+                continue
+            text, via = None, "rules"
+            if store.brain is not None and store.brain.ready()[0]:
+                text = await store.brain.think(unit, describe_room(store, unit), list(store.mind.recent))
+                via = "brain"
+            if not text:
+                text, via = store.mind.template(summary, temp), "rules"
+            store.mind.noted(key, text)
+            await store.broadcast({"type": "event", "unit": unit, "link": "hub", "name": "thought",
+                                   "text": text[:300], "via": via, "t": 0, "ts": time.time()})
+        except Exception as e:  # noqa: BLE001
+            log.warning("mind failed: %s", e)
+
+
 async def safety_loop(store):
     while True:
         await asyncio.sleep(10)
@@ -1226,6 +1257,7 @@ async def main():
         store.scene = Scene()
         store.safety = Safety()
         store.last_creature = None
+        store.mind = Mind()
         store.eye = EyeControl(log)
         store.eye.release_leftovers()
         await store.eye.apply()
@@ -1237,6 +1269,7 @@ async def main():
         log.info("eye %s", store.eye.mode)
         eyer = asyncio.create_task(eye_loop(store))
         safer = asyncio.create_task(safety_loop(store))
+        thinker = asyncio.create_task(mind_loop(store))
         lifer = asyncio.create_task(life_loop(store, life))
         log.info("daily life %s", "on" if life.enabled else "off")
         try:
@@ -1246,6 +1279,7 @@ async def main():
             lifer.cancel()
             eyer.cancel()
             safer.cancel()
+            thinker.cancel()
             await store.eye.stop()                         # the camera is released with the hub
             await zc.async_unregister_all_services()
             await zc.async_close()

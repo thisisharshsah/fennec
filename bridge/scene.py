@@ -11,6 +11,7 @@ A local vision-language model (tools/describe) adds a sentence about the scene e
 Its words become hints for a while (a video call, a phone, writing on paper), so the activity can be
 one the fixed detectors cannot see.
 """
+import collections
 import re
 import time
 
@@ -26,7 +27,6 @@ LABELS = {
     "writing": "writing on paper",
     "gaming": "playing a game",
     "watching": "watching a video",
-    "with_creature": "paying attention to the creature",
     "working": "working at the desk",
 }
 SETTLE_S = 8
@@ -60,17 +60,22 @@ class Scene:
         self._stretched_at = float("-inf")
         self.note = None                  # the model's latest sentence
         self.note_at = float("-inf")
-        self._hints = {}                  # hint -> when it was last said
+        self._hints = {}                  # hint -> when it was last confirmed
+        self._recent = collections.deque(maxlen=3)   # the hints of the last three sentences
 
     def describe(self, text):
         """The local model's sentence about the scene. Returns the hints found in it."""
         now = self.clock()
         self.note, self.note_at = text.strip(), now
-        sure = re.split(r"\b(?:possibly|perhaps|maybe|might|could be)\b", text, flags=re.IGNORECASE)[0]
+        sure = re.split(r"\b(?:possibly|perhaps|maybe|might|could be|appears? to|seems? to|likely)\b", text,
+                        flags=re.IGNORECASE)[0]
         found = [h for h, pattern in HINT_WORDS.items() if re.search(pattern, sure, re.IGNORECASE)]
-        for h in found:
+        self._recent.append(set(found))
+        # a small model makes things up now and then: a hint counts once two of the last three sentences say it
+        confirmed = [h for h in found if sum(h in r for r in self._recent) >= 2]
+        for h in confirmed:
             self._hints[h] = now
-        return found
+        return confirmed
 
     def hints(self, now):
         return {h for h, at in self._hints.items() if now - at < (NOBODY_S if h == "nobody" else HINT_S)}
@@ -81,8 +86,8 @@ class Scene:
             return "away"
         if "nobody" in hints and people <= 1 and not v.get("faces"):
             return "away"                 # the model saw an empty desk; one body box without a face is not enough
-        if people >= 2:
-            return "with_someone"
+        if people >= 2 and len(v.get("faces") or []) >= 2:
+            return "with_someone"             # two faces: a chair or a poster can pass for a body, rarely for a face
         things = set(v.get("things") or []) | (hints & {"phone", "drink", "food", "book"})
         if "call" in hints:
             return "on_call"
@@ -99,8 +104,7 @@ class Scene:
         for hint in ("writing", "gaming", "watching"):
             if hint in hints:
                 return hint
-        if v.get("looking"):
-            return "with_creature"
+        # facing the camera is not an activity: beside a screen it looks the same as working
         return "working"
 
     def update(self, outline):
@@ -138,6 +142,10 @@ class Scene:
             out["tired"] = True
         if self.note and now - self.note_at < NOTE_FRESH_S:
             out["description"] = self.note
+        # how sure: a face seen and the model agreeing raise it; the model seeing nobody lowers it
+        hints = self.hints(now)
+        sure = 0.5 + (0.2 if v.get("faces") else 0) + (0.2 if hints - {"nobody"} else 0) - (0.4 if "nobody" in hints else 0)
+        out["confidence"] = "high" if sure >= 0.7 else "low" if sure < 0.4 else "medium"
         return out
 
     def sentence(self):

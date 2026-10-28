@@ -84,10 +84,27 @@ struct HandReader {
         if fingers.allSatisfy({ $0 == true }), let middle = at(.middleTip), middle.y > wrist.y + 0.05 {
             sign = .palm                                              // all four fingers out, pointing up
         } else if fingers.allSatisfy({ $0 == false }), let thumb = at(.thumbTip), let ip = at(.thumbIP),
-                  let knuckle = at(.indexMCP), thumb.y > ip.y, thumb.y > knuckle.y + 0.04 {
-            sign = .thumbsUp                                          // a fist with the thumb above it
+                  let knuckle = at(.indexMCP), thumb.y > ip.y, thumb.y > knuckle.y + box.height * 0.35 {
+            sign = .thumbsUp                                          // a fist with the thumb clearly above it
         }
         return Shape(sign: sign, wrist: wrist, box: box)
+    }
+
+    /// Only a hand raised on purpose makes a sign: clear of the face (a chin resting on a hand is not a
+    /// sign), at least at chin height, and for a thumbs-up or palm while looking toward the creature.
+    static func meant(_ shapes: [Shape], face: CGRect?, looking: Bool) -> [Shape] {
+        shapes.map { shape in
+            guard let sign = shape.sign else { return shape }
+            let keep: Bool
+            if let face {
+                let clear = !shape.box.intersects(face.insetBy(dx: -face.width * 0.15, dy: -face.height * 0.15))
+                let raised = shape.box.midY >= face.minY - (sign == .wave ? face.height : 0)
+                keep = clear && raised && (sign == .wave || looking)
+            } else {
+                keep = sign == .wave && shape.box.midY > 0.5
+            }
+            return keep ? shape : Shape(sign: nil, wrist: shape.wrist, box: shape.box)
+        }
     }
 
     /// Feed every analysed frame. Returns a sign once when it is made, then not again for 4 s.
@@ -113,7 +130,7 @@ struct HandReader {
             heldSince = now
             return nil
         }
-        guard let sign = current, now.timeIntervalSince(heldSince) >= (sign == .palm ? 1.2 : 0.7) else { return nil }
+        guard let sign = current, now.timeIntervalSince(heldSince) >= (sign == .palm ? 1.5 : 1.0) else { return nil }
         if sign == .palm {                                            // held still, so not the start of a wave
             let recent = palmXs.filter { now.timeIntervalSince($0.t) <= 1.2 }.map(\.x)
             guard let lo = recent.min(), let hi = recent.max(), hi - lo < 0.05 else { return nil }
@@ -402,9 +419,23 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
         }
         fov = givenFov ?? knownFov[device.localizedName] ?? 60
         print("eye: using \(device.localizedName), field of view \(Int(fov))°")
-        // 16:9 keeps the lens's full width; 4:3 crops the sides of most webcams
-        session.sessionPreset = session.canSetSessionPreset(.hd1280x720) ? .hd1280x720 : .vga640x480
         session.addInput(try AVCaptureDeviceInput(device: device))
+        // The largest format at 30 fps: smaller ones are often a crop from the middle of the sensor, so
+        // the eye saw less than the camera can. Vision and the pictures sent out are scaled down anyway.
+        let full = device.formats
+            .filter { $0.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= 29 } }
+            .max { a, b in
+                let x = CMVideoFormatDescriptionGetDimensions(a.formatDescription)
+                let y = CMVideoFormatDescriptionGetDimensions(b.formatDescription)
+                return Int(x.width) * Int(x.height) < Int(y.width) * Int(y.height)
+            }
+        if let full {                                              // on macOS the format itself decides
+            try device.lockForConfiguration()
+            device.activeFormat = full
+            device.unlockForConfiguration()
+        } else {
+            session.sessionPreset = .high
+        }
         let output = AVCaptureVideoDataOutput()
         output.alwaysDiscardsLateVideoFrames = true
         output.setSampleBufferDelegate(self, queue: queue)
@@ -432,11 +463,13 @@ final class Eye: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchec
         let pose = VNDetectHumanBodyPoseRequest()
         let handler = VNImageRequestHandler(cvPixelBuffer: pixels, options: [:])
         try? handler.perform(full ? [hands, faces, bodies, pose] : [hands, faces])
-        let handShapes = (hands.results ?? []).compactMap { HandReader.shape($0, aspect: aspect) }
-        handBoxes = handShapes.map(\.box)
-        if let sign = handReader.update(handShapes, now: now) { signal(sign.rawValue, sign.label, now) }
         let faceList = faces.results ?? []
         let nearestFace = faceList.max { $0.boundingBox.height < $1.boundingBox.height }
+        let handShapes = (hands.results ?? []).compactMap { HandReader.shape($0, aspect: aspect) }
+        handBoxes = handShapes.map(\.box)
+        let lookingNow = abs(nearestFace?.yaw?.doubleValue ?? 1) < 0.35
+        let meant = HandReader.meant(handShapes, face: nearestFace?.boundingBox, looking: lookingNow)
+        if let sign = handReader.update(meant, now: now) { signal(sign.rawValue, sign.label, now) }
         if let sign = headReader.update(pitch: nearestFace?.pitch?.doubleValue, yaw: nearestFace?.yaw?.doubleValue, now: now) {
             signal(sign.rawValue, sign == .nod ? "nod (yes)" : "head shake (no)", now)
         }

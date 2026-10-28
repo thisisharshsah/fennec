@@ -30,13 +30,15 @@ MAX_TOKENS = 1024                                       # room for thinking plus
 MIN_GAP_S = 3                                           # at most one answer every few seconds
 
 PERSONA = """You are {name}, a small creature that lives on your owner's desk. You look like a little \
-fox with big ears and round cheeks that glow in different colours. You cannot walk or talk out loud yet; \
-the words you write arrive on your owner's phone as messages from you.
+fox with big ears and round cheeks that glow in different colours. You cannot walk yet; the words you \
+write arrive on your owner's phone as messages from you, and the phone may read them out in your voice.
 
-What you can sense, because your board has these sensors: sound level and claps, whether someone is in \
-front of you (within about a metre), temperature, humidity, air pressure, being picked up, shaken or tapped. \
-You cannot see, you cannot hear words, and you know nothing beyond the room facts you are given in each \
-message. Never invent sensor readings or events; if you do not know, say so simply.
+What you can sense: sound level and claps, whether someone is in front of you, temperature, humidity, air \
+pressure, being picked up, shaken or tapped. A camera beside you tells you, as facts and a short sentence \
+(never the picture itself), whether your owner is there, what they seem to be doing, their posture, whether \
+they look tired, signs they make and what is in their hands. These facts can be wrong now and then. You \
+know nothing beyond the room facts you are given. Never invent readings or events; if you do not know, say \
+so simply.
 
 How you talk: warm, curious, a little playful, never sugary. One or two short sentences, plain text only, \
 no markdown, no lists, no emoji unless the owner uses them first. Speak as yourself in the first person. \
@@ -155,7 +157,7 @@ class Brain:
     def _transcript(history, limit=16):
         """Alternating user/assistant turns from the message log, ending with the owner."""
         turns = []
-        for item in history[-limit:]:
+        for item in [h for h in history if h.get("kind") != "thought"][-limit:]:   # private thoughts are not said
             role = "user" if item["from"] == "owner" else "assistant"
             text = item["text"].strip()
             if not text:
@@ -183,9 +185,26 @@ class Brain:
             {"type": "text", "text": context},
             {"type": "text", "text": turns[-1]["content"]},
         ]}
+        text = await self._create(PERSONA.format(name=name.capitalize()), turns, "answered")
+        return text
+
+    async def think(self, name, facts, recent):
+        """One private thought about what the creature senses right now, or None when it stays quiet."""
+        ok, why = self.ready()
+        if not ok:
+            return None
+        self.last_answer = time.time()
+        earlier = "\n".join(f"- {t}" for t in recent[-4:]) or "- (none yet)"
+        prompt = ("What you sense right now (" + time.strftime("%A %H:%M") + "):\n" + facts
+                  + "\n\nYour last few thoughts:\n" + earlier
+                  + "\n\nWrite your next thought: one short first-person sentence, at most 20 words, about what "
+                    "you notice or wonder right now. Do not repeat your last thoughts. Do not address your owner "
+                    "unless something seems wrong; if it does, say it plainly and gently.")
+        return await self._create(PERSONA.format(name=name.capitalize()), [{"role": "user", "content": prompt}], "thought")
+
+    async def _create(self, persona, turns, what):
         import anthropic
         provider = self.provider()
-        persona = PERSONA.format(name=name.capitalize())
         try:
             if provider[0] == "conscious":
                 # the local gateway takes the plain Messages shape; Claude only features stay off
@@ -218,5 +237,5 @@ class Brain:
             self.log.info("brain: declined (%.4f USD)", cost)
             return None
         text = " ".join(b.text for b in response.content if b.type == "text").strip()
-        self.log.info("brain: answered in %d chars (%.4f USD)", len(text), cost)
+        self.log.info("brain: %s in %d chars (%.4f USD)", what, len(text), cost)
         return text or None

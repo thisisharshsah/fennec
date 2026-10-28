@@ -25,13 +25,13 @@ from mlx_vlm import generate, load
 from mlx_vlm.prompt_utils import apply_chat_template
 
 HUB = os.environ.get("ROOM_BRIDGE_URL", "ws://127.0.0.1:8777/")
-MODEL = os.environ.get("FENNEC_VLM", "mlx-community/Qwen2.5-VL-3B-Instruct-4bit")
+MODEL = os.environ.get("FENNEC_VLM", "mlx-community/Qwen2.5-VL-7B-Instruct-4bit")
 INTERVAL_S = 20
 # A small model grabs a ready-made answer when offered one ("Nobody is at the desk"), so it is only
 # offered when the eye itself sees no face; otherwise the question is about the person it can see.
-PERSON_QUESTION = ("In one short sentence, say what the person in this picture is doing right now and what "
-                   "they are holding or using, for example typing, on a video call, reading, eating, drinking, "
-                   "on their phone, writing on paper, playing a game or watching a video. "
+# No list of examples: a small model picks from a list it is given even when it sees none of it.
+PERSON_QUESTION = ("In one short sentence, say what the person in this picture is doing and what is in their "
+                   "hands. Only say what you can clearly see; if you are not sure, say less. "
                    "Do not guess who anyone is.")
 OPEN_QUESTION = ("Is there a person in this picture? If yes, in one short sentence say what they are doing and "
                  "what they are holding. If no, answer: no person.")

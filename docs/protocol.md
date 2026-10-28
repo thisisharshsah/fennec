@@ -243,6 +243,13 @@ offline for a minute. `{"cmd":"safety","away":1,"checkin":0}` sets the watch
 (kept in data/safety.json); the hub's hello carries `"safety":{"away","checkin","asking"}`
 and apps get `{"type":"safety",...}` on changes. It calls no one.
 
+Thoughts (`bridge/mind.py`): when what the creature senses changes (at most
+every 2 minutes) or every 6 minutes, it has one short first-person thought,
+written by the brain from all its senses when the brain is on, from
+templates otherwise: `{"type":"event","name":"thought","text":"...","via":"brain|rules","link":"hub"}`.
+`{"cmd":"messages"}` returns them with `"kind":"thought"`; they never notify
+and are not turns in the brain's conversation.
+
 When the eye runs: `{"cmd":"eye","mode":"off|auto|on"}`. The hub starts and
 stops the eye program itself (auto: while the creature's own distance sensor
 feels someone, and two minutes after), keeps the mode in data/eye.json, puts

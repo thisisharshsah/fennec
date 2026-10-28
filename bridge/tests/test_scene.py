@@ -49,10 +49,12 @@ def test_priorities():
     scene = S.Scene(clock=Clock())
     now = 0
     assert scene.guess({"present": False, "people": 0}, now) == "away"
-    assert scene.guess(here(people=2, things=["phone"]), now) == "with_someone"
+    two_faces = [[0.2, 0.5, 0.1, 0.15, 1], [0.6, 0.5, 0.1, 0.15, 0]]
+    assert scene.guess(here(people=2, faces=two_faces, things=["phone"]), now) == "with_someone"
+    assert scene.guess(here(people=2, faces=two_faces[:1]), now) == "working"        # a second body without a face
     assert scene.guess(here(things=["phone", "drink"]), now) == "on_phone"
     assert scene.guess(here(things=["drink"], looking=True), now) == "drinking"
-    assert scene.guess(here(looking=True), now) == "with_creature"
+    assert scene.guess(here(looking=True), now) == "working"
 
 
 def test_a_stretch_shows_for_a_while():
@@ -77,7 +79,8 @@ def test_the_models_words_reach_what_the_rules_cannot_see():
     clock = Clock()
     scene = S.Scene(clock=clock)
     run(scene, clock, here(), 2)
-    assert scene.describe("A person at a desk on a video call, wearing headphones.") == ["call"]
+    assert scene.describe("A person at a desk on a video call, wearing headphones.") == []      # once is not enough
+    assert scene.describe("The person is on a video call.") == ["call"]
     assert run(scene, clock, here(), 10) == ["on_call"]
     assert "The camera's model says" in scene.sentence()
     clock.t += S.HINT_S
@@ -88,8 +91,10 @@ def test_model_hints_join_what_the_hands_hold():
     clock = Clock()
     scene = S.Scene(clock=clock)
     scene.describe("Someone typing on a laptop while holding a mug of coffee.")
+    scene.describe("The person holds a mug.")
     assert scene.update(here()) == "drinking"
-    assert set(scene.describe("Someone writing in a notebook with a pen.")) == {"writing"}
+    scene.describe("Someone writing in a notebook with a pen.")
+    assert set(scene.describe("The person is writing on paper.")) == {"writing"}
 
 
 def test_the_model_seeing_an_empty_desk_overrules_a_shaky_detection():
@@ -97,6 +102,7 @@ def test_the_model_seeing_an_empty_desk_overrules_a_shaky_detection():
     scene = S.Scene(clock=clock)
     run(scene, clock, here(), 2)
     scene.describe("Nobody is at the desk.")
+    scene.describe("No one is in the picture.")
     assert run(scene, clock, here(), 10) == ["away"]
     scene.describe("Nobody is at the desk.")
     assert run(scene, clock, here(faces=[[0.4, 0.5, 0.1, 0.15, 1]]), 10) == ["working"]   # a face: someone is there
@@ -105,4 +111,6 @@ def test_the_model_seeing_an_empty_desk_overrules_a_shaky_detection():
 def test_guesses_after_possibly_are_not_hints():
     scene = S.Scene(clock=Clock())
     assert scene.describe("The person is sitting and looking down, possibly typing or writing on paper.") == []
-    assert scene.describe("The person is eating something at the desk.") == ["food"]
+    assert scene.describe("The person is eating something at the desk.") == []
+    assert scene.describe("The person eats a sandwich.") == ["food"]
+    assert scene.describe("The person appears to be on a video call.") == []

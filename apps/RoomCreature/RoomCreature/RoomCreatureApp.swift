@@ -37,7 +37,12 @@ struct RoomCreatureApp: App {
                 .onChange(of: model.desiredEndpoint) { model.applyDesiredEndpoint() }
                 .onChange(of: scenePhase) { old, new in
                     model.isActive = new == .active
-                    if new != .active { model.voice.stop() }
+                    if new != .active {
+                        model.voice.stop()
+                        #if os(iOS)
+                        model.companion.stop()                // hands-free only while on screen
+                        #endif
+                    }
                     if new == .background { model.backgroundedAt = .now }
                     if new == .active && old != .active { model.resume() }
                 }

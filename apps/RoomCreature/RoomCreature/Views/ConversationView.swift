@@ -34,7 +34,15 @@ struct ConversationView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
+            #if os(iOS)
+            if model.companion.isOn && model.companion.unitID == unitID {
+                CompanionBar(name: name)
+            } else {
+                ChatComposer(unitID: unitID, name: name)
+            }
+            #else
             ChatComposer(unitID: unitID, name: name)
+            #endif
         }
         .screenBackground()
         .navigationTitle(name)
@@ -246,9 +254,25 @@ private struct MessageRow: View {
         .accessibilityLabel("\(mine ? "You" : message.topic.filterTitle), \(message.text), \(message.time.formatted(date: .omitted, time: .shortened))")
     }
 
+    @ViewBuilder
     private func bubble(mine: Bool) -> some View {
         let shape = RoundedRectangle(cornerRadius: Theme.Radius.l, style: .continuous)
-        return Text(message.text)
+        if message.isThought {                       // a thought: quieter, dashed, not a message
+            Text(message.text)
+                .font(Theme.Text.callout.italic())
+                .foregroundStyle(Theme.textSecondary)
+                .padding(.horizontal, Theme.Spacing.m + 2)
+                .padding(.vertical, Theme.Spacing.s + 1)
+                .background(shape.fill(Theme.surfaceElevated.opacity(0.6)))
+                .overlay(shape.strokeBorder(Theme.MoodColor.color(for: .curious).opacity(0.5),
+                                            style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+        } else {
+            messageBubble(mine: mine, shape: shape)
+        }
+    }
+
+    private func messageBubble(mine: Bool, shape: RoundedRectangle) -> some View {
+        Text(message.text)
             .font(Theme.Text.body)
             .foregroundStyle(mine ? Theme.onAccent : Theme.textPrimary)
             .padding(.horizontal, Theme.Spacing.m + 2)
@@ -296,6 +320,7 @@ private struct MessageRow: View {
     private var kindTint: Color {
         switch message.topic {
         case .said: Theme.accent
+        case .thoughts: Theme.MoodColor.color(for: .curious)
         case .greetings: Theme.MoodColor.color(for: .pleased)
         case .breaks: Theme.warning
         case .wellbeing: Theme.MoodColor.color(for: .alert)
@@ -331,6 +356,20 @@ struct ChatComposer: View {
 
     var body: some View {
         HStack(spacing: Theme.Spacing.s) {
+            #if os(iOS)
+            Button {
+                Haptics.light()
+                model.companion.start(unit: unitID)
+            } label: {
+                Image(systemName: "waveform.circle.fill")
+                    .font(.system(size: 26))
+                    .foregroundStyle(model.isHubConnected ? Theme.MoodColor.color(for: .curious) : Theme.inactive)
+            }
+            .buttonStyle(.plain)
+            .disabled(!model.isHubConnected)
+            .accessibilityLabel("Talk with \(name), hands-free")
+            .padding(.leading, -Theme.Spacing.s)
+            #endif
             TextField(model.isHubConnected ? "Message \(name)" : "Not connected to the hub", text: $text)
                 .textFieldStyle(.plain)
                 .font(Theme.Text.body)
@@ -385,6 +424,65 @@ struct ChatComposer: View {
 }
 
 #if os(iOS)
+/// The bar under the conversation while the voice companion is on: what is happening, what is heard, stop.
+private struct CompanionBar: View {
+    @Environment(AppModel.self) private var model
+    let name: String
+
+    private var status: (text: String, symbol: String, tint: Color) {
+        switch model.companion.phase {
+        case .listening:
+            let heard = model.listener.transcript
+            return (heard.isEmpty ? "Listening…" : heard, "waveform", Theme.negative)
+        case .waiting: return ("\(name) is thinking…", "ellipsis.bubble", Theme.MoodColor.color(for: .curious))
+        case .speaking: return ("\(name) is talking…", "speaker.wave.2.fill", Theme.accent)
+        case .off: return ("", "waveform", Theme.inactive)
+        }
+    }
+
+    var body: some View {
+        let status = status
+        HStack(spacing: Theme.Spacing.m) {
+            Image(systemName: status.symbol)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(status.tint)
+                .symbolEffect(.variableColor.iterative, isActive: model.companion.phase != .waiting)
+                .frame(width: 32, height: 32)
+                .background(Theme.tintFill(status.tint), in: Circle())
+            Text(status.text)
+                .font(Theme.Text.body)
+                .foregroundStyle(model.listener.transcript.isEmpty ? Theme.textSecondary : Theme.textPrimary)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                Haptics.light()
+                model.companion.stop()
+            } label: {
+                Text("Stop")
+                    .font(Theme.Text.chip)
+                    .padding(.horizontal, Theme.Spacing.m)
+                    .padding(.vertical, Theme.Spacing.s)
+                    .background(Theme.surfaceElevated, in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(Theme.Spacing.m)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.l + 2, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.l + 2, style: .continuous).strokeBorder(Theme.hairline, lineWidth: 1))
+        .frame(maxWidth: Theme.contentMaxWidth)
+        .padding(.horizontal, Theme.Spacing.l)
+        .padding(.vertical, Theme.Spacing.s)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
+        .overlay(alignment: .top) {
+            if let problem = model.listener.problem {
+                Text(problem).font(Theme.Text.caption).foregroundStyle(Theme.negative).offset(y: -18)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
 /// Hold to talk: speak, let go, and the words go to the creature. While held, the words appear in
 /// the message field as they are heard. VoiceOver: activate once to start, again to send.
 private struct TalkButton: View {

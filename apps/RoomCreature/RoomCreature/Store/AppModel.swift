@@ -14,6 +14,8 @@ final class AppModel {
     #if os(iOS)
     /// Hold to talk in Chat.
     let listener = SpeechListener()
+    /// Hands-free conversation with one creature.
+    let companion = Companion()
     #endif
     /// The app is on screen; a creature only speaks then.
     @ObservationIgnored var isActive = true
@@ -24,13 +26,25 @@ final class AppModel {
         store.onEvent = { [weak self] event in
             guard let self else { return }
             self.notifier.handle(event, creatureName: self.store.registry.name(for: event.unit))
-            if self.isActive, event.isNotice, let text = event.text, !self.isListening {
+            guard self.isActive, let text = event.text, !text.isEmpty else { return }
+            #if os(iOS)
+            let thought = event.name == "thought"
+            if self.companion.isOn, event.isNotice || thought,
+               self.store.registry.currentID(for: event.unit) == self.companion.unitID {
+                self.companion.creatureSays(text, isThought: thought)
+                return
+            }
+            #endif
+            if event.isNotice, !self.isListening {
                 self.voice.say(text)
             }
         }
         store.messages.onUnreadChange = { [weak self] count in
             self?.notifier.setBadge(count)
         }
+        #if os(iOS)
+        companion.attach(self)
+        #endif
         notifier.onOpenConversation = { [weak self] unit in
             guard let self else { return }
             self.store.messages.markRead(unit)

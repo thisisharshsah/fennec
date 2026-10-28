@@ -40,7 +40,7 @@ final class MessageStore {
     }
 
     func lastMessage(for unit: String) -> CreatureMessage? {
-        items.last { $0.unit == unit }
+        items.last { $0.unit == unit && !$0.isThought }
     }
 
     /// Creatures with at least one message, most recent conversation first.
@@ -51,12 +51,12 @@ final class MessageStore {
 
     func unreadCount(for unit: String) -> Int {
         let since = lastRead[unit] ?? .distantPast
-        return items.reduce(0) { $0 + ($1.unit == unit && $1.isFromCreature && $1.time > since ? 1 : 0) }
+        return items.reduce(0) { $0 + ($1.unit == unit && $1.isFromCreature && !$1.isThought && $1.time > since ? 1 : 0) }
     }
 
     var totalUnread: Int {
         items.reduce(0) { count, item in
-            count + (item.isFromCreature && item.time > (lastRead[item.unit] ?? .distantPast) ? 1 : 0)
+            count + (item.isFromCreature && !item.isThought && item.time > (lastRead[item.unit] ?? .distantPast) ? 1 : 0)
         }
     }
 

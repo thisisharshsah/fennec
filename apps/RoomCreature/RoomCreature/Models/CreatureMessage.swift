@@ -2,10 +2,10 @@ import Foundation
 
 /// What a message is about, for the conversation filter and the per-kind notification switches.
 enum MessageTopic: String, CaseIterable, Identifiable, Sendable {
-    case said, greetings, breaks, wellbeing, room, night, safety
+    case said, thoughts, greetings, breaks, wellbeing, room, night, safety
 
-    /// Topics the owner can switch off; safety alarms always come through.
-    static var switchable: [MessageTopic] { allCases.filter { $0 != .safety } }
+    /// Topics with a notification switch: safety alarms always come through, thoughts never notify.
+    static var switchable: [MessageTopic] { allCases.filter { $0 != .safety && $0 != .thoughts } }
 
     var id: String { rawValue }
 
@@ -16,6 +16,7 @@ enum MessageTopic: String, CaseIterable, Identifiable, Sendable {
         case "break": self = .breaks
         case "posture", "tired": self = .wellbeing
         case "checkin", "alarm": self = .safety
+        case "thought": self = .thoughts
         case "warm": self = .room
         case "goodnight": self = .night
         default: self = .said
@@ -26,6 +27,7 @@ enum MessageTopic: String, CaseIterable, Identifiable, Sendable {
     var filterTitle: String {
         switch self {
         case .said: "Said"
+        case .thoughts: "Thoughts"
         case .greetings: "Greetings"
         case .breaks: "Breaks"
         case .wellbeing: "Posture"
@@ -39,6 +41,7 @@ enum MessageTopic: String, CaseIterable, Identifiable, Sendable {
     var settingTitle: String {
         switch self {
         case .said: "Things it says"
+        case .thoughts: "Its thoughts"
         case .greetings: "Greetings and good morning"
         case .breaks: "Break reminders"
         case .wellbeing: "Posture and tiredness"
@@ -51,6 +54,7 @@ enum MessageTopic: String, CaseIterable, Identifiable, Sendable {
     var systemImage: String {
         switch self {
         case .said: "bubble.left"
+        case .thoughts: "sparkles"
         case .greetings: "hand.wave"
         case .breaks: "cup.and.saucer"
         case .wellbeing: "figure.stand"
@@ -76,6 +80,8 @@ struct CreatureMessage: Identifiable, Hashable, Sendable {
     var delivery: Delivery = .delivered
 
     var isFromCreature: Bool { sender == .creature }
+    /// A private thought: shown in the conversation, never a notification, never unread.
+    var isThought: Bool { kind == "thought" }
     var topic: MessageTopic { MessageTopic(kind: kind) }
 
     /// The small icon beside the creature's bubble.
@@ -86,6 +92,7 @@ struct CreatureMessage: Identifiable, Hashable, Sendable {
         case "break": "cup.and.saucer"
         case "posture": "figure.stand"
         case "tired": "zzz"
+        case "thought": "sparkles"
         case "checkin": "questionmark.bubble"
         case "alarm": "exclamationmark.triangle"
         case "warm": "thermometer.sun"
@@ -126,6 +133,9 @@ struct CreatureMessage: Identifiable, Hashable, Sendable {
         if event.name == "notice" {
             self.init(id: "\(unit)|\(ts)|notice", unit: unit, time: Date(timeIntervalSince1970: ts),
                       sender: .creature, kind: event.kind ?? "say", text: text)
+        } else if event.name == "thought" {
+            self.init(id: "\(unit)|\(ts)|thought", unit: unit, time: Date(timeIntervalSince1970: ts),
+                      sender: .creature, kind: "thought", text: text)
         } else if event.name == "speech", event.via == "notification" || event.via == "gesture" {
             self.init(id: "\(unit)|\(ts)|reply", unit: unit, time: Date(timeIntervalSince1970: ts),
                       sender: .owner, kind: "reply", text: text)
