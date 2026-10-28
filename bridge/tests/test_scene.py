@@ -71,3 +71,32 @@ def test_sentence_and_stale_eye():
     assert scene.sentence() == "having a drink for 2 min, slouching, looks tired, a cat in view"
     clock.t += S.FRESH_S + 1
     assert scene.summary() is None and scene.sentence() is None
+
+
+def test_the_models_words_reach_what_the_rules_cannot_see():
+    clock = Clock()
+    scene = S.Scene(clock=clock)
+    run(scene, clock, here(), 2)
+    assert scene.describe("A person at a desk on a video call, wearing headphones.") == ["call"]
+    assert run(scene, clock, here(), 10) == ["on_call"]
+    assert "The camera's model says" in scene.sentence()
+    clock.t += S.HINT_S
+    assert run(scene, clock, here(), 10) == ["working"]          # the hint wears off without new words
+
+
+def test_model_hints_join_what_the_hands_hold():
+    clock = Clock()
+    scene = S.Scene(clock=clock)
+    scene.describe("Someone typing on a laptop while holding a mug of coffee.")
+    assert scene.update(here()) == "drinking"
+    assert set(scene.describe("Someone writing in a notebook with a pen.")) == {"writing"}
+
+
+def test_the_model_seeing_an_empty_desk_overrules_a_shaky_detection():
+    clock = Clock()
+    scene = S.Scene(clock=clock)
+    run(scene, clock, here(), 2)
+    scene.describe("Nobody is at the desk.")
+    assert run(scene, clock, here(), 10) == ["away"]
+    scene.describe("Nobody is at the desk.")
+    assert run(scene, clock, here(faces=[[0.4, 0.5, 0.1, 0.15, 1]]), 10) == ["working"]   # a face: someone is there

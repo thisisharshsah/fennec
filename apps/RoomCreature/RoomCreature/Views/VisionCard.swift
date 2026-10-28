@@ -14,6 +14,8 @@ struct VisionCard: View {
     let eye: EyeStatus?
     /// The latest "activity" event: what the hub makes of everything the eye sees.
     var activity: RoomEvent?
+    /// The latest "described" event: the local model's sentence about the scene.
+    var description: RoomEvent?
     let name: String
     let unitID: String
     /// Off by default: the picture is sent only while this is on and the card is on screen.
@@ -36,6 +38,13 @@ struct VisionCard: View {
                 if let live {
                     if let activity, let text = activity.text {
                         nowLine(text, since: activity.time, at: context.date)
+                    }
+                    if let description, let words = description.text, context.date.timeIntervalSince(description.time) < 90 {
+                        Text("“\(words)”")
+                            .font(Theme.Text.callout.italic())
+                            .foregroundStyle(Theme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityLabel("The camera's model says: \(words)")
                     }
                     scene(live)
                     facts(live, at: context.date)
@@ -90,6 +99,10 @@ struct VisionCard: View {
 
     private static func activitySymbol(_ label: String?) -> String {
         switch label ?? "" {
+        case let l where l.contains("call"): "video.fill"
+        case let l where l.contains("writing"): "pencil.and.scribble"
+        case let l where l.contains("game"): "gamecontroller.fill"
+        case let l where l.contains("watching"): "play.rectangle.fill"
         case let l where l.contains("phone"): "iphone"
         case let l where l.contains("drink"): "cup.and.saucer.fill"
         case let l where l.contains("eating"): "fork.knife"
@@ -111,6 +124,11 @@ struct VisionCard: View {
             Picker("Eye", selection: Binding(get: { mode }, set: { model.client.send(.eye(mode: $0)) })) {
                 ForEach(EyeStatus.Mode.allCases) { option in
                     Label(option.title, systemImage: option.symbol).tag(option)
+                }
+            }
+            if eye?.canDescribe == true {
+                Toggle(isOn: Binding(get: { eye?.describe ?? false }, set: { model.client.send(.eyeDescribes($0)) })) {
+                    Label("Describe the scene", systemImage: "text.viewfinder")
                 }
             }
             Divider()

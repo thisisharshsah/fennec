@@ -38,7 +38,12 @@ def make(tmp_path, mode=None):
         started.append(camera)
         return FakeProc()
 
-    eye = E.EyeControl(logging.getLogger("test"), path=tmp_path / "eye.json", clock=clock, launcher=launcher)
+    async def describer():
+        started.append("describer")
+        return FakeProc()
+
+    eye = E.EyeControl(logging.getLogger("test"), path=tmp_path / "eye.json", clock=clock, launcher=launcher,
+                       describer_launcher=describer, can_describe=True)
     if mode:
         asyncio.run(eye.set_mode(mode))
     return eye, clock, started
@@ -52,9 +57,17 @@ def test_off_by_default_and_on_runs(tmp_path):
     eye, _, started = make(tmp_path)
     assert eye.mode == "off" and not eye.running
     asyncio.run(eye.set_mode("on"))
-    assert eye.running and started == ["Brio"]
+    assert eye.running and started == ["Brio", "describer"]
     asyncio.run(eye.set_mode("off"))
-    assert not eye.running
+    assert not eye.running and not eye.describing
+
+
+def test_the_describer_can_be_turned_off_alone(tmp_path):
+    eye, _, started = make(tmp_path, "on")
+    asyncio.run(eye.set_describe(False))
+    assert eye.running and not eye.describing
+    again, _, _ = make(tmp_path)
+    assert again.describe is False
 
 
 def test_mode_is_remembered(tmp_path):
@@ -106,7 +119,7 @@ def test_the_hub_announces_the_eye_to_apps():
     store = B.Store()
     app = WS()
     store.clients.add(app)
-    store.eye = E.EyeControl(logging.getLogger("test"), path=pathlib.Path("/nonexistent/eye.json"))
+    store.eye = E.EyeControl(logging.getLogger("test"), path=pathlib.Path("/nonexistent/eye.json"), can_describe=False)
     asyncio.run(B.announce_eye(store, force=True))
     assert app.sent[0]["type"] == "eye" and app.sent[0]["mode"] == "off"
     asyncio.run(B.announce_eye(store))

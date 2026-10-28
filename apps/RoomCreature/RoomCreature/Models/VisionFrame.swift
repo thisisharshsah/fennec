@@ -71,8 +71,15 @@ struct EyeStatus: Decodable, Sendable, Equatable {
     var running: Bool
     var camera: String?
     var here: Bool?
+    /// The local model that puts the scene into a sentence: wanted, running now, installed.
+    var describe: Bool
+    var describing: Bool
+    var canDescribe: Bool
 
-    enum CodingKeys: String, CodingKey { case mode, running, camera, here }
+    enum CodingKeys: String, CodingKey {
+        case mode, running, camera, here, describe, describing
+        case canDescribe = "can_describe"
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -80,6 +87,9 @@ struct EyeStatus: Decodable, Sendable, Equatable {
         running = (try? c.decode(Bool.self, forKey: .running)) ?? false
         camera = try? c.decode(String.self, forKey: .camera)
         here = try? c.decode(Bool.self, forKey: .here)
+        describe = (try? c.decode(Bool.self, forKey: .describe)) ?? false
+        describing = (try? c.decode(Bool.self, forKey: .describing)) ?? false
+        canDescribe = (try? c.decode(Bool.self, forKey: .canDescribe)) ?? false
     }
 }
 

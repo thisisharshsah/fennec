@@ -325,3 +325,19 @@ def test_sign_answers_are_part_of_the_conversation(tmp_path, monkeypatch):
     monkeypatch.setattr(B.pathlib.Path, "resolve", lambda self: tmp_path / "bridge" / "bridge.py")
     items = B.read_messages(now - 3600, now)
     assert [(i["from"], i["text"]) for i in items] == [("creature", "Break?"), ("owner", "👍 Yes")]
+
+
+def test_a_snapshot_is_one_picture():
+    class WS:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, text):
+            self.sent.append(json.loads(text))
+
+    store = B.Store()
+    describer = WS()
+    store.picture_once.add(describer)
+    asyncio.run(B.send_picture(store, {"unit": "eye", "jpeg": "AAAA"}))
+    asyncio.run(B.send_picture(store, {"unit": "eye", "jpeg": "BBBB"}))
+    assert [m["jpeg"] for m in describer.sent] == ["AAAA"]

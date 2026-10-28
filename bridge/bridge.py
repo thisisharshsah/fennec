@@ -79,6 +79,7 @@ class Store:
         self.events = collections.deque(maxlen=500)
         self.clients = set()
         self.picture_clients = set()          # apps that asked for the eye's live picture (cmd "picture")
+        self.picture_once = set()             # clients that asked for one picture (cmd "snapshot")
         self.logfile = None
 
     def unit(self, name):
@@ -484,7 +485,7 @@ class HttpUnits:
         await link.deliver(msg)
         reply = {"ok": True, "unit": unit}
         if kind == "vision":
-            reply["picture"] = bool(self.store.picture_clients)   # the eye encodes pictures only while someone watches
+            reply["picture"] = bool(self.store.picture_clients or self.store.picture_once)   # only while someone watches
         return 200, json.dumps(reply)
 
 
@@ -506,11 +507,13 @@ class HttpLink(Link):
 async def send_picture(store, msg):
     """The eye's live picture: straight to the apps that asked for it. Not broadcast, not logged, not kept."""
     jpeg = msg.get("jpeg")
-    if not isinstance(jpeg, str) or not store.picture_clients:
+    targets = store.picture_clients | store.picture_once
+    if not isinstance(jpeg, str) or not targets:
         return
+    store.picture_once.clear()                       # a snapshot is one picture
     text = json.dumps({"type": "picture", "unit": msg.get("unit", "eye"), "for": body_unit(store),
                        "jpeg": jpeg, "ts": time.time()})
-    for ws in list(store.picture_clients):
+    for ws in targets:
         try:
             await ws.send(text)
         except Exception:
@@ -762,7 +765,13 @@ async def ws_handler(ws, store, serial_link):
                 if eye is not None:
                     if msg.get("mode"):
                         await eye.set_mode(str(msg["mode"]))
+                    if "describe" in msg:
+                        await eye.set_describe(bool(msg["describe"]))
                     await announce_eye(store, force=True)
+            elif msg.get("cmd") == "snapshot" and device is None:   # one picture, for the describer on this Mac
+                store.picture_once.add(ws)
+            elif msg.get("cmd") == "described" and device is None:  # the local model's sentence about the scene
+                await scene_described(store, str(msg.get("text", ""))[:300], msg.get("seconds"))
             elif msg.get("cmd") == "picture":                # this app wants the eye's live picture, or no longer
                 if msg.get("on"):
                     store.picture_clients.add(ws)
@@ -782,6 +791,7 @@ async def ws_handler(ws, store, serial_link):
     finally:
         store.clients.discard(ws)
         store.picture_clients.discard(ws)
+        store.picture_once.discard(ws)
         log.info("app left (%d)", len(store.clients))
 
 
@@ -1001,6 +1011,16 @@ async def follow_scene(store, msg):
     if changed and unit:
         await store.broadcast({"type": "event", "unit": unit, "name": "activity", "activity": changed,
                                "text": ACTIVITY_LABELS[changed], "via": "eye", "t": 0, "ts": time.time()})
+
+
+async def scene_described(store, text, seconds=None):
+    """A sentence from the local vision model: kept by the scene, logged for recaps and the agent."""
+    unit = body_unit(store)
+    if not text.strip() or not unit:
+        return
+    hints = store.scene.describe(text)
+    await store.broadcast({"type": "event", "unit": unit, "name": "described", "text": text.strip(),
+                           "hints": hints, "via": "eye", "model_s": seconds, "t": 0, "ts": time.time()})
 
 
 async def sign_answer(store, msg):

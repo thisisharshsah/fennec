@@ -48,12 +48,18 @@ struct CreatureDetailView: View {
         let eye = model.store.eye
         return VStack(spacing: Theme.Spacing.l) {
             if eye != nil || frame != nil {
-                VisionCard(frame: frame, eye: eye, activity: latestActivity, name: name, unitID: id)
+                VisionCard(frame: frame, eye: eye, activity: latestActivity, description: latestDescription, name: name, unitID: id)
             }
             SensesCard(unit: unit, embedded: true)
             historyLink
         }
         .padding(.horizontal, Theme.Spacing.l)
+    }
+
+    /// The local model's latest sentence about the scene.
+    private var latestDescription: RoomEvent? {
+        let id = unitID
+        return model.store.events.first { $0.unit == id && $0.name == "described" }
     }
 
     /// What the hub last made of everything the eye sees (events are newest first).
@@ -186,7 +192,7 @@ struct CreatureDetailView: View {
     }
 
     /// Plumbing, not things that happened in the room.
-    static let internalEvents: Set<String> = ["wifi_cmd", "error", "setup", "journal", "ack", "activity"]
+    static let internalEvents: Set<String> = ["wifi_cmd", "error", "setup", "journal", "ack", "activity", "described"]
 
     // MARK: Chat
 

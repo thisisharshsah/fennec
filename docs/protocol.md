@@ -222,6 +222,15 @@ The eye's outline carries `things` (in hand: phone, drink, food, book,
 headphones; pets: cat, dog). Recaps count minutes per activity, stretches
 and time hunched; the agent's `whats_happening` tool returns the same.
 
+The describer (`tools/describe`, its own Python environment with MLX VLM
+and Qwen2.5-VL 3B, about 2 s a sentence) runs with the eye. Every 20 s while
+someone is in view it sends `{"cmd":"snapshot"}` (one picture, loopback only),
+describes it in memory and answers `{"cmd":"described","text":"...","seconds":1.7}`
+(loopback only). The hub logs `{"type":"event","name":"described","text":"...","hints":["call"]}`;
+the words become hints for 45 s (a video call, writing, a game, a video, a
+phone or a drink), and "Nobody is at the desk" overrules a body box without
+a face for 25 s. `{"cmd":"eye","describe":0}` turns the describer off.
+
 When the eye runs: `{"cmd":"eye","mode":"off|auto|on"}`. The hub starts and
 stops the eye program itself (auto: while the creature's own distance sensor
 feels someone, and two minutes after), keeps the mode in data/eye.json, puts
