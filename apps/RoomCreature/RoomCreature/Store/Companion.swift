@@ -19,7 +19,7 @@ final class Companion {
     @ObservationIgnored private var toldBrainOff = false
 
     private static let pauseS = 1.3
-    private static let answerWaitS = 25.0
+    private static let answerWaitS = 45.0          // the local model takes about 7 to 15 s, more when it first loads
 
     func attach(_ model: AppModel) {
         self.model = model
