@@ -251,7 +251,7 @@ templates otherwise: `{"type":"event","name":"thought","text":"...","via":"brain
 and are not turns in the brain's conversation.
 
 The brain (`bridge/brain.py`) asks Farhelm, the owner's model hub, for the
-models tuned for Crawl in order (`crawl-4b`, then `crawl-2b`); a model Farhelm
+models tuned for Crawl in order (`companion`, the tuned Qwen 3.5 4B); a model Farhelm
 does not have is skipped for 10 minutes rather than answered by another one.
 When Farhelm cannot answer, Crawl's own copy of the tuned model answers on the
 hub. Nothing local falls back to a cloud model.

@@ -100,11 +100,11 @@ def test_farhelm_hub_wins_and_is_free(brain):
     fake = FakeMessages(text="Cosy in here.")
     with_fake_client(brain, fake)
     status = brain.status()
-    assert status["provider"] == "farhelm" and status["local"] and status["model"] == "crawl-4b"
-    assert status["fallback"] == "crawl-2b"
+    assert status["provider"] == "farhelm" and status["local"] and status["model"] == "companion"
+    assert status["fallback"] is None
     assert asyncio.run(brain.answer("crawl", HISTORY, "temperature 26 C")) == "Cosy in here."
     call = fake.calls[0]
-    assert call["model"] == "crawl-4b" and "betas" not in call and isinstance(call["system"], str)
+    assert call["model"] == "companion" and "betas" not in call and isinstance(call["system"], str)
     assert brain.status()["spent_today_usd"] == 0.0
 
 

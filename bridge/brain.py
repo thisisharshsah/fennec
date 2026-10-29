@@ -6,7 +6,7 @@ Where the answer comes from, in order:
 1. Farhelm, the owner's model hub, which keeps the models and the ones tuned for
    Crawl: FARHELM_API_URL and FARHELM_API_KEY from the environment or from
    fennec/.env. FARHELM_MODELS lists the models to ask, first one that answers
-   wins (default the tuned Qwen 3.5 4B, then the tuned 2B).
+   wins (default `companion`, Farhelm's name for the tuned Qwen 3.5 4B).
 2. Crawl's own copy on the hub, for when Farhelm cannot be reached (and for a
    creature away from the Mac): the same tuned model run with MLX on a thread
    of its own, loaded only when needed. Used when its adapter is present
@@ -38,7 +38,7 @@ PRICE_CACHE_READ, PRICE_CACHE_WRITE = 0.20 / 1e6, 5.00 / 1e6
 DEFAULT_DAILY_CAP = 0.50
 MAX_TOKENS = 1024                                       # room for thinking plus a two sentence reply
 MIN_GAP_S = 3                                           # at most one answer every few seconds
-FARHELM_MODELS = "crawl-4b,crawl-2b"                     # tuned Qwen 3.5 4B and 2B, registered in Farhelm
+FARHELM_MODELS = "companion"                             # Farhelm's name for the tuned Qwen 3.5 4B (qwen3.5-4b:conscious)
 OWN_MODEL = "mlx-community/Qwen3.5-4B-4bit"             # benchmark: grounded 0.95, judge 3.9 / 4.7 / 3.8
 OWN_ADAPTER = DATA / "train" / "adapters" / "Qwen3.5-4B-4bit"
 MISSING_RETRY_S = 600                                   # how long a model Farhelm lacks is skipped
