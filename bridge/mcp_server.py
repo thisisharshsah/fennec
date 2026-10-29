@@ -37,13 +37,18 @@ def _start_bridge():
                      stdin=subprocess.DEVNULL, start_new_session=True)
 
 
+START_AFTER_S = 15     # a login service restarts its bridge within 5 s; start one only when nothing does
+
+
 async def _client():
     global connected
     started = False
+    down_since = None
     while True:
         try:
             async with websockets.connect(WS_URL, open_timeout=3) as ws:
                 connected = True
+                down_since = None
                 sender = asyncio.create_task(_sender(ws))
                 try:
                     async for text in ws:
@@ -51,7 +56,8 @@ async def _client():
                 finally:
                     sender.cancel()
         except Exception:
-            if not started:
+            down_since = down_since or time.monotonic()
+            if not started and time.monotonic() - down_since >= START_AFTER_S:
                 started = True
                 (HERE.parent / "data").mkdir(exist_ok=True)
                 _start_bridge()

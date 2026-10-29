@@ -77,6 +77,13 @@ def test_warm_room_by_rise_with_cooldown():
     assert life.observe(state(temp_c=28.5))[1] == []
 
 
+def test_a_rise_to_a_comfortable_temperature_is_not_warm():
+    life, clock = make(dt.datetime(2026, 10, 29, 2, 0))
+    life.observe(state(temp_c=20.5))
+    clock.advance(20 * 60)
+    assert life.observe(state(temp_c=22.0))[1] == []      # moved away from a laptop, warming back up
+
+
 def test_goodnight_once_when_quiet_and_empty_at_night():
     life, clock = make(dt.datetime(2026, 10, 27, 22, 30))
     life.observe(state(sound_db=30.0))

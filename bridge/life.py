@@ -18,6 +18,7 @@ GREET_COOLDOWN_S = 10 * 60
 BREAK_AFTER_S = 50 * 60          # sitting in front this long earns a nudge, and again every 50 min
 WARM_LIMIT_C = 29.0
 WARM_RISE_C = 1.5                # rise within WARM_WINDOW_S
+WARM_RISE_FROM_C = 26.0          # a rise only counts when it ends this warm: 20.5 to 22 is not warm
 WARM_WINDOW_S = 30 * 60
 WARM_COOLDOWN_S = 60 * 60
 NIGHT_START_H, NIGHT_END_H = 22, 4
@@ -193,11 +194,12 @@ class Life:
             while u.temps and now - u.temps[0][0] > WARM_WINDOW_S:
                 u.temps.popleft()
             lowest = min(t for _, t in u.temps)
-            if ((temp >= WARM_LIMIT_C or temp - lowest >= WARM_RISE_C) and now - u.last_warm >= WARM_COOLDOWN_S
+            rising = temp - lowest >= WARM_RISE_C and temp >= WARM_RISE_FROM_C
+            if ((temp >= WARM_LIMIT_C or rising) and now - u.last_warm >= WARM_COOLDOWN_S
                     and now >= self.snoozed_until):
                 u.last_warm = now
                 actions += self._body(unit, "alert", None, None)
-                why = f"up {temp - lowest:.1f}° in the last half hour" if temp - lowest >= WARM_RISE_C else "above 29°"
+                why = f"up {temp - lowest:.1f}° in the last half hour" if rising else "above 29°"
                 notices.append((unit, "warm", f"It is getting warm in here: {temp:.1f}°, {why}."))
         sound = msg.get("sound_db")
         if isinstance(sound, (int, float)):
