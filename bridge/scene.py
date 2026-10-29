@@ -38,7 +38,7 @@ SOUND_WINDOW_S = 10 * 60          # the room's own quiet level is learned over t
 VOICES_DB = 10.0                  # this far above the quiet level: voices or music
 LOUD_DB = 25.0
 TALK_S = 8                        # voice-level sound this long, with someone here: talking
-NEAR_MM, BLOCKED_MM = 1200, 150   # the distance sensor: someone within NEAR_MM; closer than BLOCKED_MM is an object
+BLOCKED_MM = 150                   # the distance sensor: closer than this is an object on it, not a person
 MOVED_SHOWS_S = 60
 CORRECTED_S = 90                 # after the owner says what they are doing, believe them this long
 NOBODY_S = 25                    # "nobody is at the desk" overrules a shaky body detection until the next one
@@ -78,12 +78,16 @@ class Scene:
         self.tof_mm = None
         self.tof_at = float("-inf")
         self._moved_at = float("-inf")
+        self.board_near = None             # the creature's own verdict from steady distances; None until it says
 
     def room(self, msg):
         """A state or event from the creature itself: sound, the distance sensor, being moved."""
         now = self.clock()
         if msg.get("type") == "event" and msg.get("name") in ("moved", "picked_up", "shaken"):
             self._moved_at = now
+        if msg.get("type") == "event" and msg.get("name") in ("someone_in_front", "someone_left") \
+                and msg.get("via") != "eye":                 # the eye's own events are not the distance sensor
+            self.board_near = msg["name"] == "someone_in_front"
         if msg.get("type") != "state":
             return
         db = msg.get("sound_db")
@@ -112,12 +116,16 @@ class Scene:
         return self._voices_since is not None and now - self._voices_since >= TALK_S
 
     def distance_sensor(self, now):
-        """someone, nobody, blocked (an object right in front of it), or None when it has not reported."""
+        """someone, nobody, blocked (an object right in front of it), or None when it has not reported.
+        Someone or nobody is the creature's own presence verdict: raw distances past about a metre are
+        the room behind, scattered enough to look like a person."""
         if self.tof_mm is None or now - self.tof_at > 30:
             return None
         if 0 < self.tof_mm < BLOCKED_MM:
             return "blocked"
-        return "someone" if 0 < self.tof_mm < NEAR_MM else "nobody"
+        if self.board_near is None:
+            return None
+        return "someone" if self.board_near else "nobody"
 
     def describe(self, text):
         """The local model's sentence about the scene. Returns the hints found in it."""

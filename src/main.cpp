@@ -29,13 +29,14 @@
 #include <IWatchdog.h>
 #include <malloc.h>
 
-static const char *FW_VERSION = "0.6.0";
+static const char *FW_VERSION = "0.6.1";
 static const uint32_t BAUD = 921600;           // fast enough to stream raw audio for training
 
 static const uint32_t FAST_PERIOD_MS = 100;
 static const uint32_t STATE_PERIOD_MS = 1000;
 
 static const int   PRESENCE_MM = 1000;
+static const int   PRESENCE_STEADY_MM = 120;   // a body gives the same distance twice; the room at the edge of range jumps
 static const int   PRESENCE_ON_TICKS = 3;
 static const int   PRESENCE_OFF_TICKS = 20;
 static const float MOTION_THRESHOLD_G = 0.015f;
@@ -130,6 +131,7 @@ static void handlingSample(const int32_t *a, float sd, bool moving)
 
 static bool presence = false;
 static int  nearTicks = 0, farTicks = 0;
+static int  lastTofMm = -1;
 static const int PRESENCE_ON_TICKS_SLOW = 8;        // 0.8 s: a hand passing is not a person arriving
 
 // air gestures: a hand crossing the beam briefly (swipe) or approaching close and withdrawing (tap)
@@ -455,7 +457,11 @@ static void readFast()
     int status = tof.GetDistance(&mm);
     st.tof_mm = (status == 0 && mm > 0 && mm < 2000) ? (int)mm : -1;
     gestureSample(st.tof_mm);
-    bool near = st.tof_mm > 0 && st.tof_mm < PRESENCE_MM;
+    // near only when steady: past about a metre the sensor returns scattered distances and gaps off the
+    // room behind, which held presence on through an empty night
+    bool steady = st.tof_mm > 0 && lastTofMm > 0 && abs(st.tof_mm - lastTofMm) < PRESENCE_STEADY_MM;
+    bool near = steady && st.tof_mm < PRESENCE_MM;
+    lastTofMm = st.tof_mm;
     if (near) { nearTicks++; farTicks = 0; } else { farTicks++; nearTicks = 0; }
     if (!presence && nearTicks >= PRESENCE_ON_TICKS_SLOW) {
       presence = true;

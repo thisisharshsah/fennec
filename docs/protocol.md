@@ -261,8 +261,11 @@ hub. Nothing local falls back to a cloud model.
 All senses together: the scene also takes the creature's own state and
 events. Sound against the room's quiet level of the last ten minutes gives
 `sound` (quiet, voices, loud) and `talking` (voice level for 8 s with someone
-there); the distance sensor gives `distance_sensor` (someone within 1.2 m,
-nobody, or blocked when closer than 15 cm, which is ignored); being moved,
+there); the distance sensor gives `distance_sensor` (someone or nobody, from
+the creature's own `someone_in_front` and `someone_left`, which need steady
+readings within 1 m: past that the sensor returns the room behind, scattered
+enough to look like a person; or blocked when closer than 15 cm, which is
+ignored); being moved,
 picked up or shaken gives `creature_moved`. Agreement between the face, the
 model and the distance sensor sets `confidence` (high, medium, low). With
 the eye off, the distance sensor alone can still report `at_desk`.

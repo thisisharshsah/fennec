@@ -162,14 +162,31 @@ def test_sound_and_talking_join_the_picture():
     assert "voices in the room" in scene.sentence()
 
 
+def presence(name, via=None):
+    return dict({"type": "event", "unit": "crawl", "name": name}, **({"via": via} if via else {}))
+
+
 def test_distance_sensor_keeps_the_picture_without_the_camera():
     clock = Clock()
     scene = S.Scene(clock=clock)
     scene.room(state(tof_mm=600))
+    assert scene.summary() is None                         # a distance alone is not a person
+    scene.room(presence("someone_in_front"))
     s = scene.summary()                                    # the eye never sent anything
     assert s["activity"] == "at_desk" and s["confidence"] == "low"
     scene.room(state(tof_mm=74))                           # something right in front of the sensor
     assert scene.summary() is None
+
+
+def test_the_room_behind_is_not_someone():
+    clock = Clock()
+    scene = S.Scene(clock=clock)
+    scene.room(presence("someone_left"))
+    for mm in (969, 584, 1113, -1, 730, 1052):             # the empty room at the edge of range
+        scene.room(state(tof_mm=mm))
+        assert scene.summary() is None
+    scene.room(presence("someone_in_front", via="eye"))    # the camera's events do not count here
+    assert scene.distance_sensor(clock.t) == "nobody"
 
 
 def test_senses_agreeing_or_not_moves_the_confidence():
@@ -177,9 +194,11 @@ def test_senses_agreeing_or_not_moves_the_confidence():
     scene = S.Scene(clock=clock)
     face = [[0.4, 0.5, 0.1, 0.15, 1]]
     scene.room(state(tof_mm=600))
+    scene.room(presence("someone_in_front"))
     run(scene, clock, here(faces=face), 2)
     assert scene.summary()["confidence"] == "high"
     scene.room(state(tof_mm=3000))
+    scene.room(presence("someone_left"))
     run(scene, clock, here(), 1)
     assert scene.summary()["confidence"] == "low"
 
