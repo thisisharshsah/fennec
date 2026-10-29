@@ -70,6 +70,21 @@ def test_room_danger(tmp_path):
     assert [t.split()[0] for _, t in notices(out)] == ["Humidity", "A"]
 
 
+def test_warming_up_after_power_on_is_not_a_fire(tmp_path):
+    s, clock = make(tmp_path)
+    start = clock.t
+    s.observe(ev("boot"), "crawl")
+    for minute, temp in enumerate([23.3, 24.0, 24.6, 25.3, 25.8, 26.2, 26.5, 26.9, 27.0, 27.4]):   # 2026-10-29 02:32
+        clock.t = start + minute * 60
+        assert notices(s.observe({"type": "state", "unit": "crawl", "temp_c": temp, "hum_pct": 48.0 - minute}, "crawl")) == []
+    out = s.observe({"type": "state", "unit": "crawl", "temp_c": 41.0}, "crawl")
+    assert "Heat alarm" in notices(out)[0][1]                # very hot still counts
+    clock.t = start + 30 * 60                                # warmed up: a real rise counts again
+    s.observe({"type": "state", "unit": "crawl", "temp_c": 27.0}, "crawl")
+    clock.t += 300
+    assert "up 4.5" in notices(s.observe({"type": "state", "unit": "crawl", "temp_c": 31.5}, "crawl"))[0][1]
+
+
 def test_gone_dark_and_back(tmp_path):
     s, clock = make(tmp_path)
     s.observe({"type": "unit_status", "unit": "crawl", "connected": False}, "crawl")
