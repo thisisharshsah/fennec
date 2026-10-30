@@ -341,3 +341,34 @@ def test_a_snapshot_is_one_picture():
     asyncio.run(B.send_picture(store, {"unit": "eye", "jpeg": "AAAA"}))
     asyncio.run(B.send_picture(store, {"unit": "eye", "jpeg": "BBBB"}))
     assert [m["jpeg"] for m in describer.sent] == ["AAAA"]
+
+
+class FakeCable(FakeLink):
+    lasting = True
+
+
+@pytest.mark.asyncio
+async def test_the_cable_link_is_kept_while_unplugged(tmp_path):
+    s = store_without_logging(tmp_path)
+    cable = FakeCable(s, "serial")
+    cable.alive = False                                     # unplugged
+    FakeLink(s, "wifi")                                     # a Wi-Fi connection comes and goes meanwhile
+    assert cable in s.links
+    cable.alive = True                                      # plugged back in: commands reach it again
+    await feed(cable, {"type": "hello", "unit": "crawl"})
+    await B.route_command(s, {"cmd": "express", "unit": "crawl", "mood": "pleased"})
+    assert {"cmd": "express", "mood": "pleased"} in cable.sent
+
+
+@pytest.mark.asyncio
+async def test_a_unit_that_cannot_reach_the_bridge_gets_its_address_once(tmp_path, monkeypatch):
+    s = store_without_logging(tmp_path)
+    monkeypatch.setattr(B, "lan_ip", lambda: "192.168.1.85")
+    cable = FakeCable(s, "serial")
+    lost = {"type": "hello", "unit": "crawl", "wifi": {"joined": True, "bridge": False}}
+    await feed(cable, lost)
+    await feed(cable, lost)
+    told = [m for m in cable.sent if m.get("cmd") == "bridge"]
+    assert told == [{"cmd": "bridge", "host": "192.168.1.85", "port": B.UNIT_PORT}]
+    await feed(cable, {"type": "hello", "unit": "crawl", "wifi": {"joined": True, "bridge": True}})
+    assert len([m for m in cable.sent if m.get("cmd") == "bridge"]) == 1

@@ -29,6 +29,8 @@ import websockets
 
 from life import Life
 from brain import Brain
+from memory import Memory
+from emotion import Emotion
 from eye_control import EyeControl
 from scene import LABELS as ACTIVITY_LABELS, Scene
 from safety import Safety
@@ -82,6 +84,8 @@ class Store:
         self.clients = set()
         self.picture_clients = set()          # apps that asked for the eye's live picture (cmd "picture")
         self.picture_once = set()             # clients that asked for one picture (cmd "snapshot")
+        self.memory = Memory()
+        self.emotion = Emotion()
         self.logfile = None
 
     def unit(self, name):
@@ -128,8 +132,13 @@ class Store:
         kind = msg.get("type")
         if kind == "state":
             u["last_state"] = msg
+            if msg.get("temp_c") is not None:
+                history = u.setdefault("temp_history", collections.deque(maxlen=120))
+                history.append((time.time(), float(msg["temp_c"])))
         elif kind == "event":
             self.events.append(msg)
+            if getattr(self, "emotion", None):
+                self.emotion.observe(msg.get("name"))
         elif kind == "hello":
             u["hello"] = msg
         elif kind == "unit_status":
@@ -168,12 +177,15 @@ class Store:
 class Link:
     """One transport to one unit. Subclasses deliver raw lines to _handle()."""
     kind = "?"
+    lasting = False         # one object for the hub's whole life (the cable), alive or not
 
     def __init__(self, store):
         self.store = store
         self.name = None
         self.alive = False
-        store.links = [l for l in store.links if l.alive] + [self]
+        self.told_host = None   # the bridge address last given to the unit over this link
+        # forget finished connections, but never the cable: it comes back to life on the same object
+        store.links = [l for l in store.links if l.alive or l.lasting] + [self]
 
     async def send(self, msg):
         return False
@@ -214,6 +226,15 @@ class Link:
                 log.info("%s link is unit '%s'", self.kind, self.name)
                 if self.kind == "wifi":
                     await self.send({"cmd": "ping"})              # the first line into a fresh link tends to be lost; spend it
+            wifi = msg.get("wifi") or {}
+            host = lan_ip()
+            if self.kind == "serial" and wifi.get("joined") and wifi.get("bridge") is False \
+                    and self.told_host != host:
+                # on the network but not reaching us: most likely this Mac's address changed since it was set.
+                # Once per address: the unit writes it to flash.
+                self.told_host = host
+                log.info("unit '%s' cannot reach the bridge over Wi-Fi; giving it %s", self.name, host)
+                await self.send({"cmd": "bridge", "host": host, "port": UNIT_PORT})
         if not self.name:
             return                                                  # nothing before the hello
         if msg.get("type") == "audio":                              # clips come over the cable even when Wi-Fi is active
@@ -286,6 +307,7 @@ class Link:
 
 class SerialLink(Link):
     kind = "serial"
+    lasting = True
 
     def __init__(self, store, port, baud):
         super().__init__(store)
@@ -932,15 +954,59 @@ def describe_room(store, unit):
     u = store.units.get(unit) or {}
     s = u.get("last_state") or {}
     lines = []
-    if s.get("temp_c") is not None:
-        lines.append(f"temperature {s['temp_c']:.1f} C, humidity {s.get('hum_pct', 0):.0f} %")
-    if s.get("sound_db") is not None:
-        lines.append(f"sound level {s['sound_db']:.0f} dB (quiet room is about 30)")
-    body = s.get("body") or {}
-    if body.get("mood"):
-        lines.append(f"your mood: {body['mood']}")
     now = time.time()
+
+    # temperature with temporal delta
+    if s.get("temp_c") is not None:
+        temp_str = f"temperature {s['temp_c']:.1f} C"
+        history = u.get("temp_history")
+        if history and len(history) >= 2:
+            older = next((t for ts, t in history if now - ts >= 10 * 60), history[0][1])
+            delta = s["temp_c"] - older
+            if delta >= 0.8:
+                temp_str += f" (warmed up +{delta:.1f} C recently)"
+            elif delta <= -0.8:
+                temp_str += f" (cooled down {delta:.1f} C recently)"
+            else:
+                temp_str += " (steady)"
+        lines.append(f"{temp_str}, humidity {s.get('hum_pct', 0):.0f} %")
+
+    # sound level with quiet ambient floor
+    if s.get("sound_db") is not None:
+        sound_str = f"sound level {s['sound_db']:.0f} dB"
+        scene = getattr(store, "scene", None)
+        if scene and len(getattr(scene, "_sounds", [])) >= 5:
+            quiet_db = sorted(db for _, db in scene._sounds)[len(scene._sounds) // 10]
+            sound_str += f" (ambient quiet is {quiet_db:.0f} dB)"
+        else:
+            sound_str += " (quiet room is about 30)"
+        lines.append(sound_str)
+
+    # acoustic direction
+    if s.get("sound_dir") is not None and s.get("sound_db", 0) >= 38:
+        s_dir = float(s["sound_dir"])
+        direction = "to your left" if s_dir < -0.3 else ("to your right" if s_dir > 0.3 else "straight ahead")
+        lines.append(f"sound direction: {direction} ({s_dir:+.1f})")
+
+    emotion = getattr(store, "emotion", None)
+    if emotion:
+        lines.append(f"internal feeling: {emotion.summary()}")
+    else:
+        body = s.get("body") or {}
+        if body.get("mood"):
+            lines.append(f"your mood: {body['mood']}")
+
     recent = [e for e in store.events if e.get("unit") == unit and now - e.get("ts", 0) < 2 * 3600]
+
+    # immediate events from last 2 minutes
+    immediate = [e for e in recent if now - e.get("ts", 0) <= 120
+                 and e.get("name") in ("clap", "knock", "moved", "picked_up", "shaken", "tap")]
+    if immediate:
+        latest = immediate[-1]
+        sec_ago = max(1, int(now - latest["ts"]))
+        ename = latest["name"].replace("_", " ")
+        lines.append(f"recent event: {ename} ({sec_ago}s ago)")
+
     presence = next((e for e in reversed(recent) if e.get("name") in ("someone_in_front", "someone_left")), None)
     if presence:
         mins = int((now - presence["ts"]) // 60)
@@ -959,6 +1025,14 @@ def describe_room(store, unit):
             counts[e["name"]] = counts.get(e["name"], 0) + 1
     if counts:
         lines.append("last 2 hours: " + ", ".join(f"{v} x {k.replace('_', ' ')}" for k, v in sorted(counts.items())))
+
+    # long term memory context
+    memory = getattr(store, "memory", None)
+    if memory:
+        mem_ctx = memory.prompt_context(now=now)
+        if mem_ctx:
+            lines.append(mem_ctx)
+
     return "\n".join(lines) or "no readings yet"
 
 
@@ -969,15 +1043,26 @@ async def creature_answers(store, unit):
         return
     loop = asyncio.get_running_loop()
     history = await loop.run_in_executor(None, read_messages, time.time() - 2 * 86400, time.time() + 1, unit)
-    text = await brain.answer(unit, history, describe_room(store, unit))
-    if text:
-        await creature_says(store, unit, text[:300])
-
-
-async def creature_says(store, unit, text):
+    text, tags = await brain.answer_with_tags(unit, history, describe_room(store, unit))
     if not text:
         return
-    await route_command(store, {"cmd": "chirp", "unit": unit, "name": "hello"})   # silent until a speaker is fitted
+    if tags.get("mood"):
+        await route_command(store, {"cmd": "mood", "unit": unit, "name": tags["mood"]})
+    if tags.get("gesture"):
+        await route_command(store, {"cmd": "gesture", "unit": unit, "name": tags["gesture"]})
+    chirp_name = tags.get("chirp", "hello")
+    await route_command(store, {"cmd": "chirp", "unit": unit, "name": chirp_name})
+    if tags.get("remember") and getattr(store, "memory", None):
+        for fact in tags["remember"]:
+            store.memory.remember("owner", fact, source="chat")
+    await creature_says(store, unit, text[:300], chirp=False)
+
+
+async def creature_says(store, unit, text, chirp=True):
+    if not text:
+        return
+    if chirp:
+        await route_command(store, {"cmd": "chirp", "unit": unit, "name": "hello"})   # silent until a speaker is fitted
     await post_notice(store, unit, "say", text)
 
 
@@ -1093,6 +1178,9 @@ async def run_life(store, life, actions, notices):
     for unit, cmd in actions:
         await route_command(store, dict(cmd, unit=unit))
     for unit, kind, text in notices:
+        if kind == "goodnight" and getattr(store, "memory", None):
+            today_str = dt.date.today().isoformat()
+            store.memory.record_day(today_str, notes=text)
         await post_notice(store, unit, kind, text)
 
 
@@ -1151,6 +1239,15 @@ async def mind_loop(store):
             store.mind.noted(key, text)
             await store.broadcast({"type": "event", "unit": unit, "link": "hub", "name": "thought",
                                    "text": text[:300], "via": via, "t": 0, "ts": time.time()})
+            speak_ok, speak_reason = store.mind.should_speak(summary, temp)
+            if speak_ok and store.brain is not None and store.brain.ready()[0]:
+                spoken, speak_tags = await store.brain.proactive_with_tags(
+                    unit, speak_reason, text, describe_room(store, unit))
+                if spoken:
+                    store.mind.spoke()
+                    if speak_tags.get("gesture"):
+                        await route_command(store, {"cmd": "gesture", "unit": unit, "name": speak_tags["gesture"]})
+                    await creature_says(store, unit, spoken[:300])
         except Exception as e:  # noqa: BLE001
             log.warning("mind failed: %s", e)
 
