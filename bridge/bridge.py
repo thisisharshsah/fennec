@@ -19,7 +19,9 @@ import math
 import os
 import signal
 import pathlib
+import re
 import socket
+import subprocess
 import sys
 import time
 
@@ -61,7 +63,30 @@ def find_port():
     return None
 
 
+TUNNELS = ("lo", "utun", "tun", "tap", "wg", "ppp", "ipsec", "gif", "stf", "awdl", "llw", "anpi", "bridge")
+
+
+def real_address(ifconfig):
+    """The first private IPv4 address on a real network interface in ifconfig's output. A VPN's tunnel
+    can own the default route, but units and phones cannot reach the bridge through it."""
+    interface = ""
+    for line in ifconfig.splitlines():
+        if line and not line[0].isspace():
+            interface = line.split(":")[0]
+        elif line.strip().startswith("inet ") and not interface.startswith(TUNNELS):
+            address = line.split()[1]
+            if address.startswith(("192.168.", "10.")) or re.match(r"172\.(1[6-9]|2\d|3[01])\.", address):
+                return address
+    return None
+
+
 def lan_ip():
+    try:
+        address = real_address(subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=2).stdout)
+        if address:
+            return address
+    except (OSError, subprocess.SubprocessError):
+        pass                                               # no ifconfig on this system: ask the routes
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("10.255.255.255", 1))
@@ -133,7 +158,7 @@ class Store:
         if kind == "state":
             u["last_state"] = msg
             if msg.get("temp_c") is not None:
-                history = u.setdefault("temp_history", collections.deque(maxlen=120))
+                history = u.setdefault("_temp_history", collections.deque(maxlen=120))
                 history.append((time.time(), float(msg["temp_c"])))
         elif kind == "event":
             self.events.append(msg)
@@ -229,7 +254,7 @@ class Link:
             wifi = msg.get("wifi") or {}
             host = lan_ip()
             if self.kind == "serial" and wifi.get("joined") and wifi.get("bridge") is False \
-                    and self.told_host != host:
+                    and self.told_host != host and host != "127.0.0.1":
                 # on the network but not reaching us: most likely this Mac's address changed since it was set.
                 # Once per address: the unit writes it to flash.
                 self.told_host = host
@@ -627,7 +652,7 @@ def read_series(unit, field, since, until):
             day = time.mktime(time.strptime(f.stem[4:], "%Y-%m-%d"))
         except ValueError:
             continue
-        if day + 86400 < since or day > until:
+        if day + 25 * 3600 < since or day > until:             # 25 h: the day the clocks go back
             continue
         with open(f) as fh:
             for line in fh:
@@ -669,7 +694,7 @@ def read_messages(since, until, unit=None):
             day = time.mktime(time.strptime(f.stem[4:], "%Y-%m-%d"))
         except ValueError:
             continue
-        if day + 86400 < since or day > until:
+        if day + 25 * 3600 < since or day > until:             # 25 h: the day the clocks go back
             continue
         with open(f) as fh:
             for line in fh:
@@ -866,7 +891,7 @@ def day_facts(unit, since, until):
             day = time.mktime(time.strptime(f.stem[4:], "%Y-%m-%d"))
         except ValueError:
             continue
-        if day + 86400 < since or day > until:
+        if day + 25 * 3600 < since or day > until:             # 25 h: the day the clocks go back
             continue
         with open(f) as fh:
             for line in fh:
@@ -959,7 +984,7 @@ def describe_room(store, unit):
     # temperature with temporal delta
     if s.get("temp_c") is not None:
         temp_str = f"temperature {s['temp_c']:.1f} C"
-        history = u.get("temp_history")
+        history = u.get("_temp_history")
         if history and len(history) >= 2:
             older = next((t for ts, t in history if now - ts >= 10 * 60), history[0][1])
             delta = s["temp_c"] - older

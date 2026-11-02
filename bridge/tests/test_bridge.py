@@ -372,3 +372,24 @@ async def test_a_unit_that_cannot_reach_the_bridge_gets_its_address_once(tmp_pat
     assert told == [{"cmd": "bridge", "host": "192.168.1.85", "port": B.UNIT_PORT}]
     await feed(cable, {"type": "hello", "unit": "crawl", "wifi": {"joined": True, "bridge": True}})
     assert len([m for m in cable.sent if m.get("cmd") == "bridge"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_apps_can_be_welcomed_after_the_unit_reports_a_temperature(tmp_path):
+    s = store_without_logging(tmp_path)
+    link = FakeLink(s, "wifi")
+    await feed(link, {"type": "hello", "unit": "crawl"})
+    await feed(link, {"type": "state", "t": 1, "temp_c": 24.5})
+    assert json.loads(json.dumps(s.hello_message()))["units"][0]["last_state"]["temp_c"] == 24.5
+
+
+def test_the_bridge_address_is_never_a_vpn_tunnel():
+    ifconfig = """lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
+\tinet 127.0.0.1 netmask 0xff000000
+en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+\tinet 192.168.1.85 netmask 0xffffff00 broadcast 192.168.1.255
+utun8: flags=80d1<UP,POINTOPOINT,RUNNING,NOARP,MULTICAST> mtu 1358
+\tinet 10.27.70.156 netmask 0xff000000
+"""
+    assert B.real_address(ifconfig) == "192.168.1.85"
+    assert B.real_address(ifconfig.split("en0")[0] + "utun8: flags\n\tinet 10.27.70.156 netmask\n") is None
