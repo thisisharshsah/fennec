@@ -29,7 +29,7 @@
 #include <IWatchdog.h>
 #include <malloc.h>
 
-static const char *FW_VERSION = "0.6.1";
+static const char *FW_VERSION = "0.6.2";
 static const uint32_t BAUD = 921600;           // fast enough to stream raw audio for training
 
 static const uint32_t FAST_PERIOD_MS = 100;
@@ -215,6 +215,7 @@ static void healthBegin()
 {
   if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST)) resetCause = "watchdog";
   else if (__HAL_RCC_GET_FLAG(RCC_FLAG_SFTRST)) resetCause = "software";
+  else if (__HAL_RCC_GET_FLAG(RCC_FLAG_BORRST)) resetCause = "power";   // a power-on sets the pin flag too
   else if (__HAL_RCC_GET_FLAG(RCC_FLAG_PINRST)) resetCause = "pin";
   __HAL_RCC_CLEAR_RESET_FLAGS();
   cfgLoad(&health, sizeof health, HEALTH_OFFSET);
